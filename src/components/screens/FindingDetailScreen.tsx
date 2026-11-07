@@ -142,7 +142,7 @@ export function FindingDetailScreen({
               icon={<Compare size={17} />}
               label="Before & after"
               summary={<StatusTag status={comparison.status} />}
-              defaultOpen={section === "compare"}
+              defaultOpen
             >
               <ComparisonEvidence wt={wt} finding={finding} event={comparison} />
             </Disclosure>

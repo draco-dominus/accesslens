@@ -1,4 +1,4 @@
-import type { FindingStatus, Scan, ScanEvent, Session, TrackedFinding } from "./types";
+import type { FindingEvent, FindingStatus, Scan, ScanEvent, Session, TrackedFinding } from "./types";
 import { isOpen } from "./types";
 import { firstSentence } from "../text";
 import { areas } from "./areas";
@@ -375,4 +375,32 @@ export function findingCaptionForScan(s: Session, scanId: string, f: TrackedFind
     return { label: `#${f.number} · Compared with scan ${ref}: ${STATUS_LABEL[here.status].toLowerCase()}`, text: firstSentence(here.comparison.observedChange) };
   }
   return { label: `#${f.number} · ${STATUS_LABEL[here.status]} in this photo`, text: firstSentence(here.note) };
+}
+
+/* ---------- Re-check result headline ---------- */
+
+const IMPROVED_HEADLINE: Record<TrackedFinding["details"]["barrierType"], string> = {
+  obstructed_walkway: "Obstruction appears removed",
+  protruding_obstacle: "Protruding object appears removed",
+  steps: "Step barrier appears improved",
+  other: "Barrier appears improved",
+};
+
+/**
+ * One line summarizing a re-check, derived only from the recorded comparison. The specific "appears
+ * removed" wording needs every piece of evidence to agree: the final (guarded) status is "appears
+ * improved", the comparison itself said "improved", it judged the photos to be the same place, and the
+ * area was clearly visible afterwards. Otherwise the line stays generic or says what's uncertain.
+ * `detail` is the comparison's own description of the change.
+ */
+export function recheckHeadline(f: TrackedFinding, event: FindingEvent): { text: string; tone: "improved" | "still" | "unsure"; detail?: string } {
+  const c = event.comparison;
+  const detail = c ? firstSentence(c.observedChange) : undefined;
+  if (event.status === "appears_improved") {
+    const supported = c?.status === "improved" && c.sameLocation === "yes" && c.afterAreaVisible === "yes";
+    return { text: supported ? IMPROVED_HEADLINE[f.details.barrierType] : "Appears improved", tone: "improved", detail };
+  }
+  if (event.status === "still_observed") return { text: "Still present in the new photo", tone: "still", detail };
+  if (event.status === "needs_verification") return { text: "Couldn’t confirm a change — check on site", tone: "unsure", detail };
+  return { text: "No change recorded", tone: "unsure", detail };
 }

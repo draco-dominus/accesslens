@@ -15,7 +15,7 @@ import { FixedWindowLimiter } from "./rate-limit";
  *     Defaults leave room for a brisk walkthrough (each scan = 1 preview + 1 analyze + ≤1 match + ≤3 compares).
  */
 
-export type GuardedRoute = "preview" | "analyze" | "match" | "compare";
+export type GuardedRoute = "preview" | "analyze" | "match" | "compare" | "chat";
 
 const MB = 1024 * 1024;
 const MAX_BODY_BYTES: Record<GuardedRoute, number> = {
@@ -23,10 +23,11 @@ const MAX_BODY_BYTES: Record<GuardedRoute, number> = {
   analyze: 8 * MB, // the app sends a normalized JPEG (~0.2–1 MB)
   match: 12 * MB, // new image + up to 4 smaller earlier images
   compare: 12 * MB, // two normalized JPEGs
+  chat: 64 * 1024, // bounded structured inspection context; photographs are not accepted
 };
 
-const PER_MINUTE: Record<GuardedRoute, number> = { preview: 20, analyze: 10, match: 10, compare: 20 };
-const PER_HOUR: Record<GuardedRoute, number> = { preview: 200, analyze: 120, match: 120, compare: 240 };
+const PER_MINUTE: Record<GuardedRoute, number> = { preview: 20, analyze: 10, match: 10, compare: 20, chat: 6 };
+const PER_HOUR: Record<GuardedRoute, number> = { preview: 200, analyze: 120, match: 120, compare: 240, chat: 60 };
 
 const limiters = Object.fromEntries(
   (Object.keys(PER_MINUTE) as GuardedRoute[]).map((r) => [
@@ -56,7 +57,11 @@ function sameOrigin(request: Request): boolean {
 export function guardRequest(request: Request, route: GuardedRoute): Response | null {
   const length = Number(request.headers.get("content-length"));
   if (Number.isFinite(length) && length > MAX_BODY_BYTES[route]) {
-    return fail(413, "REQUEST_TOO_LARGE", "This upload is too large. Please use a smaller photo.");
+    return fail(
+      413,
+      "REQUEST_TOO_LARGE",
+      route === "chat" ? "This chat request is too large. Shorten the conversation or include fewer findings." : "This upload is too large. Please use a smaller photo.",
+    );
   }
   if (!sameOrigin(request)) {
     return fail(403, "FORBIDDEN_ORIGIN", "Requests from other websites aren't allowed.");
@@ -69,7 +74,11 @@ export function guardRequest(request: Request, route: GuardedRoute): Response | 
     if (!verdict.allowed) {
       const seconds = Math.max(1, Math.ceil(verdict.retryAfterMs / 1000));
       console.warn("[guard]", JSON.stringify({ route, event: "rate_limited", retryAfterSeconds: seconds }));
-      const res = fail(429, "RATE_LIMITED", "You're scanning faster than Lumi can keep up. Please wait a moment and try again.");
+      const res = fail(
+        429,
+        "RATE_LIMITED",
+        route === "chat" ? "You're asking questions faster than Lumi can answer. Please wait a moment and try again." : "You're scanning faster than Lumi can keep up. Please wait a moment and try again.",
+      );
       res.headers.set("Retry-After", String(seconds));
       return res;
     }

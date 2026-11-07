@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { retryKey, type useWalkthrough } from "@/hooks/useWalkthrough";
 import { areaOf, recheckTarget } from "@/lib/session/areas";
-import { findingsForScan, scanActivity, STATUS_LABEL } from "@/lib/session/lumi";
+import { findingsForScan, recheckHeadline, scanActivity, STATUS_LABEL } from "@/lib/session/lumi";
 import type { Scan, TrackedFinding } from "@/lib/session/types";
 import { spatialBoxes } from "@/lib/spatial";
 import { comparisonPhotos } from "../discover/FindingParts";
@@ -11,7 +11,7 @@ import { PhotoViewer, ScanPhoto, type PhotoMarker } from "../discover/PhotoStage
 import { StageChecklist, TimingBreakdown } from "../lumi/ScanProgress";
 import { TrustSheet } from "../trust/TrustPanel";
 import { BeforeAfter } from "../ui/BeforeAfter";
-import { Chat, ChevronRight, Compare, Home, Info, Layers, List, Rescan, Scan as ScanIcon } from "../ui/Icons";
+import { Alert, Chat, Check, ChevronRight, Compare, Document, Home, Info, Layers, List, Question, Rescan, Scan as ScanIcon } from "../ui/Icons";
 import { BarrierIcon, NeedMarks } from "../ui/Needs";
 import { Button, GlassIconButton } from "../ui/primitives";
 import { AiBadge, StatusTag } from "../ui/Tags";
@@ -34,6 +34,7 @@ export function DiscoverScreen({
   onReview,
   onAsk,
   onHome,
+  onReport,
 }: {
   wt: Walkthrough;
   scan: Scan;
@@ -46,6 +47,7 @@ export function DiscoverScreen({
   /** Ask Lumi, about this photo's first finding when there is one. */
   onAsk: (findingId?: string) => void;
   onHome: () => void;
+  onReport: () => void;
 }) {
   const session = wt.session!;
   const processing = scan.step !== "done" && scan.step !== "error";
@@ -94,7 +96,7 @@ export function DiscoverScreen({
 
         {/* A finished re-check leads with its before/after; otherwise the photo leads. */}
         {scan.step === "done" && compared.length > 0 ? (
-          <RecheckResult wt={wt} compared={compared} onOpenFinding={onOpenFinding} />
+          <RecheckResult wt={wt} compared={compared} onOpenFinding={onOpenFinding} onReport={onReport} />
         ) : (
           <div className="px-4">
             <ScanPhoto photo={photo} alt={alt} emptyText={emptyText} processing={processing || checking} markers={markers} maxHeight="52cqh" onOpen={photo ? () => setViewer(true) : undefined} />
@@ -231,52 +233,93 @@ function FindingRow({ finding, onOpen }: { finding: TrackedFinding; onOpen: () =
   );
 }
 
-/** Re-check result: the comparison photos, large, and each compared finding's new status. */
+/** Re-checks whose reveal animation already played (once per page load is enough). */
+const revealed = new Set<string>();
+
+/**
+ * The re-check result — the signature moment. An evidence-gated one-line result, the comparison's own
+ * description of the change, then the before/after photos (the after wipes in once). Next steps follow.
+ */
 function RecheckResult({
   wt,
   compared,
   onOpenFinding,
+  onReport,
 }: {
   wt: Walkthrough;
   compared: { finding: TrackedFinding; event: TrackedFinding["history"][number] }[];
   onOpenFinding: (id: string, section?: "compare") => void;
+  onReport: () => void;
 }) {
-  const { beforeScan, nowScan, beforeUrl, nowUrl } = comparisonPhotos(wt, compared[0].finding, compared[0].event);
+  const { finding, event } = compared[0];
+  const { beforeScan, nowScan, beforeUrl, nowUrl } = comparisonPhotos(wt, finding, event);
+  const head = recheckHeadline(finding, event);
+  const [reveal] = useState(() => {
+    const first = !revealed.has(event.scanId);
+    revealed.add(event.scanId);
+    return first;
+  });
+  const others = compared.slice(1);
   return (
     <section className="animate-rise-in mx-4 rounded-[26px] bg-surface p-4 shadow-[var(--shadow-float)]" aria-labelledby="recheck-heading">
-      <h2 id="recheck-heading" className="flex items-baseline gap-2 text-[18px] font-semibold tracking-[-0.02em]">
-        <Compare size={19} className="self-center" /> Before & after
-        <span className="text-[13px] font-medium text-muted">
-          scan {beforeScan?.number ?? "?"} → {nowScan?.number ?? "?"}
+      <p className="flex items-center gap-1.5 text-[13px] font-semibold text-muted">
+        <Compare size={15} /> Before & after · scan {beforeScan?.number ?? "?"} → {nowScan?.number ?? "?"}
+      </p>
+      <div className="mt-2 flex items-start gap-3" aria-live="polite">
+        <span
+          aria-hidden
+          className={`result-pop mt-0.5 grid size-9 shrink-0 place-items-center rounded-full ${head.tone === "improved" ? "bg-success text-white" : head.tone === "still" ? "bg-[color-mix(in_srgb,var(--color-caution)_22%,transparent)]" : "bg-surface-2"}`}
+        >
+          {head.tone === "improved" ? <Check size={18} strokeWidth={3} /> : head.tone === "still" ? <Alert size={17} /> : <Question size={17} />}
         </span>
-      </h2>
-      <ul className="mt-3 space-y-2">
-        {compared.map(({ finding, event }) => (
-          <li key={finding.id}>
-            <button
-              type="button"
-              onClick={() => onOpenFinding(finding.id, "compare")}
-              className="pressable flex min-h-14 w-full items-center gap-3 rounded-[18px] bg-surface-2 px-3.5 py-2.5 text-left"
-              aria-label={`Finding ${finding.number}: ${finding.details.title}. ${STATUS_LABEL[event.status]}. Open the comparison`}
-            >
-              <span className="min-w-0 flex-1">
-                <span className="block text-[15px] leading-snug font-semibold">
-                  #{finding.number} {finding.details.title}
-                </span>
-                <span className="mt-1 block">
-                  <StatusTag status={event.status} />
-                </span>
-              </span>
-              <ChevronRight size={18} className="shrink-0 text-muted" />
-            </button>
-          </li>
-        ))}
-      </ul>
+        <div className="min-w-0 flex-1">
+          <h2 id="recheck-heading" className="text-[21px] leading-tight font-semibold tracking-[-0.02em]">
+            {head.text}
+          </h2>
+          <p className="mt-1 text-[15px] leading-snug text-muted">
+            #{finding.number} {finding.details.title}
+          </p>
+        </div>
+      </div>
+      {head.detail && <p className="mt-3 text-[16px] leading-snug">{head.detail}</p>}
       {beforeUrl && nowUrl && (
         <div className="mt-3">
-          <BeforeAfter earlier={beforeUrl} later={nowUrl} earlierLabel={`Scan ${beforeScan?.number}, earlier`} laterLabel={`Scan ${nowScan?.number}, now`} />
+          <BeforeAfter earlier={beforeUrl} later={nowUrl} reveal={reveal} earlierLabel={`Scan ${beforeScan?.number}, before`} laterLabel={`Scan ${nowScan?.number}, after`} />
         </div>
       )}
+      {head.tone === "improved" && <p className="mt-2.5 text-[13px] leading-snug text-muted">Based on these two photos. Confirm it in person; it doesn’t mean the whole space is accessible.</p>}
+      {others.length > 0 && (
+        <ul className="mt-3 space-y-2">
+          {others.map(({ finding: f, event: e }) => (
+            <li key={f.id}>
+              <button
+                type="button"
+                onClick={() => onOpenFinding(f.id, "compare")}
+                className="pressable flex min-h-14 w-full items-center gap-3 rounded-[18px] bg-surface-2 px-3.5 py-2.5 text-left"
+                aria-label={`Finding ${f.number}: ${f.details.title}. ${STATUS_LABEL[e.status]}. Open the comparison`}
+              >
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[15px] leading-snug font-semibold">
+                    #{f.number} {f.details.title}
+                  </span>
+                  <span className="mt-1 block">
+                    <StatusTag status={e.status} />
+                  </span>
+                </span>
+                <ChevronRight size={18} className="shrink-0 text-muted" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="mt-4 flex gap-2">
+        <Button size="md" variant="secondary" className="min-w-0 flex-1 px-3 whitespace-nowrap" onClick={() => onOpenFinding(finding.id, "compare")}>
+          Details
+        </Button>
+        <Button size="md" variant="secondary" className="min-w-0 flex-1 px-3 whitespace-nowrap" icon={<Document size={17} />} onClick={onReport}>
+          Report
+        </Button>
+      </div>
     </section>
   );
 }

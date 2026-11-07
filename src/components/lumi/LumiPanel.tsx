@@ -1,86 +1,70 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { answerQuestion, LUMI_QUESTIONS, progressLine, type LumiQuestionId } from "@/lib/session/lumi";
 import { isOpen, type Session, type TrackedFinding } from "@/lib/session/types";
 import { Sidekick } from "./Sidekick";
-import { Close, History, Info, List, People, Pin, Question, Scan, Wrench } from "../ui/Icons";
+import { ChevronLeft, History, Info, List, People, Pin, Question, Scan, Wrench } from "../ui/Icons";
 import { Button, IridescentEdge } from "../ui/primitives";
 import { StatusTag } from "../ui/Tags";
 
-export function LumiPanel({
-  open,
+/**
+ * Ask Lumi — its own destination (not a sheet). Answers come only from recorded finding data via
+ * answerQuestion(); nothing new is generated. Back returns to wherever the user came from.
+ */
+export function AskLumiScreen({
   session,
   findingId,
   onFindingChange,
-  onClose,
+  onBack,
   onOpenFinding,
   onScan,
 }: {
-  open: boolean;
   session: Session | null;
   findingId: string | null;
   onFindingChange: (id: string) => void;
-  onClose: () => void;
+  onBack: () => void;
   onOpenFinding: (finding: TrackedFinding) => void;
   onScan: () => void;
 }) {
-  const panel = useRef<HTMLDivElement>(null);
-  const opener = useRef<Element | null>(null);
   const findings = session?.findings ?? [];
   const finding = findings.find((item) => item.id === findingId) ?? [...findings].reverse().find((item) => isOpen(item.status)) ?? findings.at(-1);
 
-  useEffect(() => {
-    if (!open) return;
-    opener.current = document.activeElement;
-    panel.current?.focus({ preventScroll: true });
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      (opener.current as HTMLElement | null)?.focus?.();
-    };
-  }, [open, onClose]);
-
   return (
-    <>
-      <div aria-hidden onClick={onClose} className={`absolute inset-0 z-[70] bg-black/40 transition-opacity duration-300 ${open ? "opacity-100" : "pointer-events-none opacity-0"}`} />
-      <section
-        ref={panel}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Ask Lumi"
-        tabIndex={-1}
-        inert={!open}
-        className={`absolute inset-x-2 bottom-2 z-[71] flex max-h-[88%] flex-col overflow-hidden rounded-[34px] border border-glass-line bg-[var(--sheet)] text-fg shadow-[var(--shadow-float)] outline-none transition-[transform,opacity] duration-[480ms] ease-[var(--ease-ios)] ${open ? "translate-y-0 opacity-100" : "translate-y-[110%] opacity-0"}`}
-      >
-        <div className="relative flex shrink-0 items-center gap-3 px-4 pt-4 pb-3">
-          <IridescentEdge active={open} ring={1.25} bloom={8} speed={7} />
-          <Sidekick mood={finding ? "ready" : "welcome"} size={46} halo={Boolean(finding)} />
-          <div className="min-w-0 flex-1">
-            <h2 className="text-[19px] font-semibold tracking-[-0.02em]">Ask Lumi</h2>
-            <p className="text-[13px] leading-snug text-muted">Grounded in this inspection—nothing new is generated.</p>
-          </div>
-          <button type="button" onClick={onClose} aria-label="Close Ask Lumi" className="pressable grid size-11 place-items-center rounded-full bg-surface-2 text-muted">
-            <Close size={18} />
-          </button>
+    <div className="flex h-full flex-col bg-bg text-fg">
+      <header className="relative flex shrink-0 items-center gap-3 px-4 pt-[calc(var(--safe-top)+4px)] pb-3">
+        <button
+          type="button"
+          onClick={onBack}
+          aria-label="Back"
+          className="pressable grid size-11 shrink-0 place-items-center rounded-full border border-glass-line bg-glass shadow-[var(--shadow-soft)] backdrop-blur-xl"
+        >
+          <ChevronLeft size={19} />
+        </button>
+        <div className="relative">
+          <Sidekick mood={finding ? "ready" : "welcome"} size={42} halo={Boolean(finding)} />
         </div>
+        <div className="min-w-0 flex-1">
+          <h1 className="text-[20px] font-semibold tracking-[-0.02em]">Ask Lumi</h1>
+          <p className="text-[13px] leading-snug text-muted">Grounded in this inspection. Nothing new is generated.</p>
+        </div>
+      </header>
+      <div className="relative mx-4 h-px shrink-0 overflow-hidden rounded-full">
+        <IridescentEdge active ring={1} bloom={6} speed={8} inner={false} />
+      </div>
 
-        {finding && session ? (
-          <AskFinding key={finding.id} session={session} finding={finding} findings={findings} onFindingChange={onFindingChange} onOpenFinding={() => onOpenFinding(finding)} />
-        ) : (
-          <div className="overflow-y-auto px-5 pt-3 pb-[calc(var(--safe-bottom)+18px)]">
-            <p className="text-[18px] leading-snug font-semibold">I’m ready when you are.</p>
-            <p className="mt-2 text-[15px] leading-relaxed text-muted">Take a photo of an entrance, walkway or room. Once there’s a finding, I can explain why it could matter, what might help and what the photo cannot confirm.</p>
-            <Button className="mt-5 w-full" onClick={onScan} icon={<Scan size={19} />}>
-              Start scanning
-            </Button>
-          </div>
-        )}
-      </section>
-    </>
+      {finding && session ? (
+        <AskFinding key={finding.id} session={session} finding={finding} findings={findings} onFindingChange={onFindingChange} onOpenFinding={() => onOpenFinding(finding)} />
+      ) : (
+        <div className="overflow-y-auto px-5 pt-5 pb-[calc(var(--safe-bottom)+18px)]">
+          <p className="text-[18px] leading-snug font-semibold">I’m ready when you are.</p>
+          <p className="mt-2 text-[15px] leading-relaxed text-muted">Take a photo of an entrance, walkway or room. Once there’s a finding, I can explain why it could matter, what might help and what the photo can’t confirm.</p>
+          <Button className="mt-5 w-full" onClick={onScan} icon={<Scan size={19} />}>
+            Start scanning
+          </Button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -113,7 +97,7 @@ function AskFinding({
   }, [speaking]);
 
   return (
-    <div className="no-scrollbar min-h-0 overflow-y-auto overscroll-contain px-4 pb-[calc(var(--safe-bottom)+16px)] [-webkit-overflow-scrolling:touch]">
+    <div className="no-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pt-3 pb-[calc(var(--safe-bottom)+16px)] [-webkit-overflow-scrolling:touch]">
       {findings.length > 1 && (
         <div className="no-scrollbar -mx-4 flex gap-1.5 overflow-x-auto px-4 pb-2" role="tablist" aria-label="Choose a finding">
           {findings.map((item) => (
@@ -131,7 +115,7 @@ function AskFinding({
             <p className="text-[16px] font-semibold">#{finding.number} {finding.details.title}</p>
             <div className="mt-1"><StatusTag status={finding.status} /></div>
           </div>
-          <button type="button" onClick={onOpenFinding} aria-label={`View finding ${finding.number} in its photo`} className="pressable grid size-11 shrink-0 place-items-center rounded-full bg-surface-2 text-muted">
+          <button type="button" onClick={onOpenFinding} aria-label={`Open finding ${finding.number} details`} className="pressable grid size-11 shrink-0 place-items-center rounded-full bg-surface-2 text-muted">
             <Pin size={18} />
           </button>
         </div>

@@ -194,3 +194,39 @@ export const Print = (p: P) => (
     <path d="M7 14h10v6.5H7zM18.5 11.5h.01" />
   </Base>
 );
+/* Barrier types */
+export const Stairs = (p: P) => (
+  <Base {...p}>
+    <path d="M3.5 19.5h5v-4.5h4.5v-4.5h4.5V6h3" />
+  </Base>
+);
+export const Obstruction = (p: P) => (
+  <Base {...p}>
+    <path d="M3.5 19.5h17" />
+    <rect x="8" y="9" width="8" height="8" rx="1.5" />
+    <path d="M4.5 13.5h2M17.5 13.5h2" />
+  </Base>
+);
+export const Protrusion = (p: P) => (
+  <Base {...p}>
+    <path d="M5 3.5v17" />
+    <path d="M5 8.5h9.5a1.5 1.5 0 0 1 1.5 1.5v2a1.5 1.5 0 0 1-1.5 1.5H5" />
+    <path d="M19.5 7v8" strokeDasharray="1.5 2" />
+  </Base>
+);
+/* Accessibility-need categories */
+export const Wheelchair = (p: P) => (
+  <Base {...p}>
+    <circle cx="10.5" cy="4.5" r="1.6" />
+    <path d="M10.5 7.5v5.5h5l2.5 5" />
+    <path d="M10.5 10h4" />
+    <path d="M7.6 10.4a5 5 0 1 0 6.9 6.6" />
+  </Base>
+);
+export const Signpost = (p: P) => (
+  <Base {...p}>
+    <path d="M12 3v18" />
+    <path d="M12 5.5h6.5l2 2-2 2H12z" />
+    <path d="M12 11.5H5.5l-2 2 2 2H12" />
+  </Base>
+);

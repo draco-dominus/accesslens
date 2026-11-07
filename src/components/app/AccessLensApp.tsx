@@ -4,22 +4,25 @@ import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { flushSync } from "react-dom";
 import { useWalkthrough } from "@/hooks/useWalkthrough";
 import { DiscoverScreen } from "../screens/DiscoverScreen";
+import { FindingDetailScreen, isRecheckable } from "../screens/FindingDetailScreen";
 import { InspectionReport } from "../screens/InspectionReport";
 import { ScanScreen } from "../screens/ScanScreen";
 import { WalkthroughScreen } from "../screens/WalkthroughScreen";
 import { WelcomeScreen } from "../screens/WelcomeScreen";
-import { LumiPanel } from "../lumi/LumiPanel";
+import { AskLumiScreen } from "../lumi/LumiPanel";
 import { Chat, Close, Home, Pin, Route, Scan } from "../ui/Icons";
 import { GlassIconButton } from "../ui/primitives";
 
 /**
  * AccessLens app shell, adapted from the Figma prototype's App.tsx.
- * Journey: Welcome → Start walkthrough → Scan → Discover (with Ask Lumi in each finding) → Scan again → Review walkthrough.
+ * Journey: Home → Camera → Analyzing → Inspect (photo + findings) → Finding details → Re-check → Before/after
+ * → Review → Report. Ask Lumi is its own destination. All data comes from useWalkthrough (real API calls +
+ * session engine); nothing here is mocked.
  * All data comes from useWalkthrough (real API calls + session engine); nothing here is mocked.
  */
 
 export type Theme = "light" | "dark";
-type Screen = "welcome" | "scan" | "discover" | "walkthrough" | "report";
+type Screen = "welcome" | "scan" | "discover" | "finding" | "ask" | "walkthrough" | "report";
 
 const NAV = [
   { id: "discover", label: "Findings", icon: Pin },
@@ -57,8 +60,11 @@ export function AccessLensApp() {
   const [freshScanId, setFreshScanId] = useState<string | null>(null);
   const [findingId, setFindingId] = useState<string | null>(null);
   const [lineUpTarget, setLineUpTarget] = useState<string | undefined>();
-  const [lumiOpen, setLumiOpen] = useState(false);
   const [lumiFindingId, setLumiFindingId] = useState<string | null>(null);
+  const [askReturn, setAskReturn] = useState<Screen>("welcome");
+  const [reportReturn, setReportReturn] = useState<Screen>("welcome");
+  /** Finding Details: which finding, seen from which scan's photo, optionally at the comparison. */
+  const [detail, setDetail] = useState<{ findingId: string; scanId: string; section?: "compare" } | null>(null);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -69,14 +75,12 @@ export function AccessLensApp() {
   const latestScan = scans.at(-1) ?? null;
   const currentScan = scans.find((s) => s.id === scanId) ?? latestScan;
   const hasScans = scans.length > 0;
-  const [askId, setAskId] = useState<string | null>(null);
 
   const go = useCallback((s: Screen) => withTransition(() => setScreen(s)), []);
   const toggleTheme = () => setOverride(theme === "dark" ? "light" : "dark");
 
   /** Open the camera. `lineUp`: pre-select an earlier scan to line up with (re-checking a finding). */
   const startScan = (lineUp?: string) => {
-    setLumiOpen(false);
     setLineUpTarget(typeof lineUp === "string" ? lineUp : undefined);
     if (!session) wt.start();
     else if (session.finishedAt !== null) wt.resume();
@@ -89,23 +93,45 @@ export function AccessLensApp() {
     setScanId(id);
     setFreshScanId(id);
     setFindingId(null);
-    setAskId(null);
     go("discover");
   };
 
-  const openScan = (id: string, finding?: string, ask = false) => {
+  /** Inspect a scan's photo, optionally with one finding focused on it. */
+  const openScan = (id: string, finding?: string) => {
     setScanId(id);
     setFreshScanId(null);
     setFindingId(finding ?? null);
-    setAskId(ask && finding ? finding : null);
     go("discover");
+  };
+
+  /** Finding Details, seen from a scan's photo (defaults to where the finding was last seen). */
+  const openFinding = (id: string, fromScanId?: string, section?: "compare") => {
+    const f = session?.findings.find((x) => x.id === id);
+    if (!f) return;
+    setFindingId(id);
+    setDetail({ findingId: id, scanId: fromScanId ?? f.lastSeenScanId, section });
+    go("finding");
+  };
+
+  /** Back from details to the photo, with that finding still focused. */
+  const backToPhoto = () => {
+    if (detail) openScan(detail.scanId, detail.findingId);
+    else go("discover");
   };
 
   const openLumi = (id?: string) => {
     const preferred = id ?? findingId ?? [...(session?.findings ?? [])].reverse().find((finding) => finding.status !== "appears_improved")?.id ?? session?.findings.at(-1)?.id ?? null;
     setLumiFindingId(preferred);
-    setLumiOpen(true);
+    setAskReturn(screen === "ask" ? askReturn : screen);
+    go("ask");
   };
+
+  const openReport = () => {
+    setReportReturn(screen === "report" ? reportReturn : screen);
+    go("report");
+  };
+
+  const detailFinding = detail ? session?.findings.find((f) => f.id === detail.findingId) : undefined;
 
   // Camera-led screens are always dark; others follow the chosen appearance.
   const chromeTheme: Theme = screen === "scan" || screen === "discover" ? "dark" : theme;
@@ -126,24 +152,47 @@ export function AccessLensApp() {
               onResume={() => latestScan && openScan(latestScan.id)}
               onReview={() => go("walkthrough")}
               onAsk={() => openLumi()}
-              onReport={() => go("report")}
+              onReport={() => openReport()}
             />
           )}
           {screen === "scan" && <ScanScreen wt={wt} onCapture={onCaptured} initialLineUpScanId={lineUpTarget} />}
           {screen === "discover" && currentScan && (
             <DiscoverScreen
-              key={`${currentScan.id}:${askId ?? ""}`}
+              key={currentScan.id}
               wt={wt}
               scan={currentScan}
               fresh={freshScanId === currentScan.id}
               theme={theme}
               selectedFindingId={findingId}
-              initialAskId={askId}
               onSelectFinding={setFindingId}
+              onOpenFinding={(id, section) => openFinding(id, currentScan.id, section)}
               onOpenScan={openScan}
               onScanAgain={() => startScan()}
               onRecheck={(id) => startScan(id)}
               onOpenWalkthrough={() => go("walkthrough")}
+            />
+          )}
+          {screen === "finding" && detail && detailFinding && (
+            <FindingDetailScreen
+              key={`${detail.findingId}:${detail.scanId}:${detail.section ?? ""}`}
+              wt={wt}
+              finding={detailFinding}
+              scanId={detail.scanId}
+              section={detail.section}
+              onBack={backToPhoto}
+              onShowInPhoto={backToPhoto}
+              onAsk={() => openLumi(detailFinding.id)}
+              onRecheck={isRecheckable(wt, detailFinding) ? () => startScan(detailFinding.lastSeenScanId) : undefined}
+            />
+          )}
+          {screen === "ask" && (
+            <AskLumiScreen
+              session={session}
+              findingId={lumiFindingId}
+              onFindingChange={setLumiFindingId}
+              onBack={() => go(askReturn === "ask" || askReturn === "scan" ? (hasScans ? "discover" : "welcome") : askReturn)}
+              onOpenFinding={(finding) => openFinding(finding.id)}
+              onScan={() => startScan()}
             />
           )}
           {screen === "walkthrough" && (
@@ -152,8 +201,8 @@ export function AccessLensApp() {
               theme={theme}
               onToggleTheme={toggleTheme}
               onScan={startScan}
-              onOpenScan={(id, finding) => openScan(id, finding)}
-              onReport={() => go("report")}
+              onOpenScan={(id, finding) => (finding ? openFinding(finding, id) : openScan(id))}
+              onReport={() => openReport()}
               onRestart={() => {
                 wt.reset();
                 setScanId(null);
@@ -162,7 +211,7 @@ export function AccessLensApp() {
               }}
             />
           )}
-          {screen === "report" && session && <InspectionReport session={session} media={wt.media} onBack={() => go("welcome")} />}
+          {screen === "report" && session && <InspectionReport session={session} media={wt.media} onBack={() => go(reportReturn)} />}
         </div>
 
         {/* Simulated status bar + Dynamic Island, framed desktop preview only (from the prototype). */}
@@ -188,7 +237,7 @@ export function AccessLensApp() {
           </span>
         </div>
 
-        {screen !== "welcome" && (
+        {screen !== "welcome" && screen !== "finding" && screen !== "ask" && screen !== "report" && (
           <nav
             data-theme={chromeTheme}
             aria-label="AccessLens"
@@ -240,10 +289,9 @@ export function AccessLensApp() {
               <button
                 type="button"
                 disabled={!session}
-                aria-expanded={lumiOpen}
                 aria-label="Ask Lumi"
                 onClick={() => openLumi()}
-                className={`pressable flex size-11 items-center justify-center rounded-full transition-[background-color,color] duration-300 ease-[var(--ease-ios)] disabled:opacity-30 ${lumiOpen ? "bg-primary text-on-primary" : "text-fg hover:bg-[color-mix(in_srgb,var(--fg)_8%,transparent)]"}`}
+                className="pressable flex size-11 items-center justify-center rounded-full text-fg transition-[background-color,color] duration-300 ease-[var(--ease-ios)] hover:bg-[color-mix(in_srgb,var(--fg)_8%,transparent)] disabled:opacity-30"
               >
                 <Chat size={18} />
               </button>
@@ -281,18 +329,6 @@ export function AccessLensApp() {
           </nav>
         )}
 
-        <LumiPanel
-          open={lumiOpen}
-          session={session}
-          findingId={lumiFindingId}
-          onFindingChange={setLumiFindingId}
-          onClose={() => setLumiOpen(false)}
-          onOpenFinding={(finding) => {
-            setLumiOpen(false);
-            openScan(finding.history.at(-1)?.scanId ?? finding.lastSeenScanId, finding.id);
-          }}
-          onScan={() => startScan()}
-        />
       </div>
     </main>
   );

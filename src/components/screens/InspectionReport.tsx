@@ -13,15 +13,18 @@ export function InspectionReport({ session, media, onBack }: { session: Session;
   const date = new Intl.DateTimeFormat(undefined, { dateStyle: "long", timeStyle: "short" }).format(new Date(session.startedAt));
 
   return (
-    <div className="report-screen no-scrollbar h-full overflow-y-auto bg-bg px-4 pt-[calc(var(--safe-top)+68px)] pb-[calc(var(--safe-bottom)+28px)] text-fg">
+    <div className="report-screen no-scrollbar h-full overflow-y-auto bg-bg px-4 pt-[calc(var(--safe-top)+8px)] pb-[calc(var(--safe-bottom)+28px)] text-fg">
       <div className="no-print flex items-center justify-between gap-3">
         <button type="button" onClick={onBack} className="pressable inline-flex min-h-11 items-center gap-1 rounded-full px-2 text-[15px] font-semibold">
           <ChevronLeft size={18} /> Back
         </button>
         <Button size="md" onClick={() => window.print()} icon={<Print size={17} />}>
-          Print or save PDF
+          Download PDF
         </Button>
       </div>
+      <p className="no-print mt-2 px-2 text-right text-[12px] leading-snug text-muted">
+        Opens the print sheet: choose Save as PDF. On iPhone, use Share, then Save to Files.
+      </p>
 
       <header className="mt-5 border-b border-line pb-6 print:mt-0">
         <div className="flex items-start gap-4">

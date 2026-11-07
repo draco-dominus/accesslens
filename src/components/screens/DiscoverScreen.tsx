@@ -2,17 +2,18 @@
 
 import { useEffect, useRef, useState } from "react";
 import { retryKey, type useWalkthrough } from "@/hooks/useWalkthrough";
-import { findingsForScan, lineUpSuggestion, lumiMessagesForScan, scanActivity, scanMood } from "@/lib/session/lumi";
-import { isOpen, type Scan } from "@/lib/session/types";
-import { FindingCard } from "../discover/FindingCard";
+import { findingsForScan, findingCaptionForScan, lineUpSuggestion, lumiMessagesForScan, scanActivity, scanMood, STATUS_LABEL } from "@/lib/session/lumi";
+import { isOpen, type Scan, type TrackedFinding } from "@/lib/session/types";
+import { comparisonPhotos } from "../discover/FindingParts";
 import { PhotoStage } from "../discover/PhotoStage";
 import { StageChecklist, TimingBreakdown, useTicker } from "../lumi/ScanProgress";
 import { Sidekick, type LumiMood } from "../lumi/Sidekick";
 import { TrustSheet } from "../trust/TrustPanel";
-import { ChevronDown, ChevronRight, Info, Layers, Rescan } from "../ui/Icons";
+import { ChevronDown, ChevronRight, Compare, Info, Layers, Rescan } from "../ui/Icons";
+import { BarrierIcon, NeedMarks } from "../ui/Needs";
 import { activeMood, Button } from "../ui/primitives";
 import { Sheet, type Detent } from "../ui/Sheet";
-import { AiBadge } from "../ui/Tags";
+import { AiBadge, StatusTag } from "../ui/Tags";
 import type { Theme } from "../app/AccessLensApp";
 
 type Walkthrough = ReturnType<typeof useWalkthrough>;
@@ -20,14 +21,15 @@ type Walkthrough = ReturnType<typeof useWalkthrough>;
 /** Sheet detents: the photo always keeps the space above the sheet. */
 const HEIGHTS: Record<Detent, string> = {
   peek: "max(30%, 210px)",
-  half: "56%",
+  half: "52%",
   full: "calc(100% - var(--safe-top) - 62px)",
 };
 
 /**
- * Discover: the scanned photo is the centerpiece; Lumi and the findings live in a three-detent sheet.
- * Findings connect to the photo through the rail of chips on the photo and "Show in photo" — never via
- * invented boxes or markers (the backend returns no coordinates).
+ * Inspect: the scanned photo is the centerpiece. Findings are numbered references on the photo and
+ * concise one-line rows below; tapping a finding opens its own Finding Details screen. After a re-check,
+ * a Before & after entry leads straight to the comparison. No boxes or markers are drawn on the photo:
+ * the backend returns no coordinates.
  */
 export function DiscoverScreen({
   wt,
@@ -35,8 +37,8 @@ export function DiscoverScreen({
   fresh,
   theme,
   selectedFindingId,
-  initialAskId,
   onSelectFinding,
+  onOpenFinding,
   onOpenScan,
   onScanAgain,
   onRecheck,
@@ -47,9 +49,9 @@ export function DiscoverScreen({
   fresh: boolean;
   theme: Theme;
   selectedFindingId: string | null;
-  /** Open Ask Lumi for this finding on arrival. */
-  initialAskId?: string | null;
   onSelectFinding: (id: string | null) => void;
+  /** Open Finding Details (optionally at a section, e.g. the before/after comparison). */
+  onOpenFinding: (findingId: string, section?: "compare") => void;
   onOpenScan: (scanId: string, findingId?: string) => void;
   onScanAgain: () => void;
   /** Open the camera lined up with an earlier scan, to re-check its findings from the same spot. */
@@ -66,14 +68,16 @@ export function DiscoverScreen({
   const checking = wt.checking[scan.id];
   const manualOptions = scan.step === "done" && !checking && wt.hasImage(scan.id) ? wt.manualRevisitOptions(scan.id).filter((o) => !scan.pendingRevisit.includes(o.id)) : [];
   const nudge = lineUpSuggestion(session, scan.id);
+  // Findings compared in THIS scan: their before/after is the headline result of a re-check.
+  const compared = items
+    .map((i) => ({ finding: i.finding, event: i.finding.history.filter((h) => h.scanId === scan.id).at(-1) }))
+    .filter((x): x is { finding: TrackedFinding; event: NonNullable<typeof x.event> } => Boolean(x.event?.comparison));
 
-  const [detent, setDetent] = useState<Detent>(() => (initialAskId ? "full" : selectedFindingId || (!processing && items.length) ? "half" : "peek"));
-  const [askingId, setAskingId] = useState<string | null>(initialAskId ?? null);
+  const [detent, setDetent] = useState<Detent>(() => (selectedFindingId || (!processing && items.length) ? "half" : "peek"));
   const [trustOpen, setTrustOpen] = useState(false);
   const tick = useTicker(processing, 1000);
   // Developer timing breakdown: open the app with ?timing=1 (this screen only renders client-side).
   const [showTiming] = useState(() => typeof window !== "undefined" && new URLSearchParams(window.location.search).has("timing"));
-  const cardRefs = useRef<Record<string, HTMLLIElement | null>>({});
 
   // Raise the sheet when results arrive for a fresh scan.
   const doneNow = scan.step === "done";
@@ -83,42 +87,13 @@ export function DiscoverScreen({
     prevDone.current = doneNow;
   }, [doneNow, fresh, items.length]);
 
-  const sheetContent = useRef<HTMLDivElement | null>(null);
-  /**
-   * Scroll a card to the top of the SHEET only. (scrollIntoView would also scroll every ancestor,
-   * including the overflow-hidden device frame, shifting the whole app.)
-   */
-  const scrollToCard = (id: string) =>
-    window.setTimeout(() => {
-      const box = sheetContent.current, card = cardRefs.current[id];
-      if (!box || !card) return;
-      const top = card.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop - 12;
-      const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      box.scrollTo({ top, behavior: reduced ? "auto" : "smooth" });
-    }, 380);
-  useEffect(() => {
-    if (selectedFindingId) scrollToCard(selectedFindingId);
-  }, [selectedFindingId]);
-
-  /** Select from the photo rail: open the card, keep the photo visible. */
+  /** Select a reference on the photo: the photo gets the room, the caption explains it. */
   const selectFromPhoto = (id: string | null) => {
     onSelectFinding(id);
-    if (id) setDetent((d) => (d === "full" ? "half" : d === "peek" ? "half" : d));
-  };
-  const toggleCard = (id: string) => onSelectFinding(selectedFindingId === id ? null : id);
-  const showInPhoto = (id: string) => {
-    onSelectFinding(id);
-    setDetent("peek");
-  };
-  const setAsk = (id: string, on: boolean) => {
-    setAskingId(on ? id : null);
-    if (on) {
-      setDetent("full");
-      scrollToCard(id);
-    }
+    if (id) setDetent("peek");
   };
 
-  const mood: LumiMood = checking || processing ? "thinking" : askingId ? "speaking" : scanMood(scan);
+  const mood: LumiMood = checking || processing ? "thinking" : scanMood(scan);
   const activity = scanActivity(scan);
   const newCount = items.filter((i) => i.role === "new").length;
   const updatedCount = items.length - newCount;
@@ -142,10 +117,10 @@ export function DiscoverScreen({
               {Math.max(0, Math.round((tick - scan.createdAt) / 1000))}s · you can keep scanning
             </p>
           ) : scan.step === "done" ? (
-            <div className="mt-1 flex items-center gap-2">
-              <span className="text-[13px] text-muted">
+            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span className="text-[13px] whitespace-nowrap text-muted">
                 Scan {scan.number} · {newCount ? `${newCount} new` : "nothing new"}
-                {updatedCount ? ` · ${updatedCount} re-checked` : ""}
+                {updatedCount ? ` · ${updatedCount} re\u2011checked` : ""}
               </span>
               <AiBadge />
             </div>
@@ -167,20 +142,13 @@ export function DiscoverScreen({
         findings={items.map((i) => i.finding)}
         selectedId={selectedFindingId}
         onSelect={selectFromPhoto}
+        onOpenDetails={(id) => onOpenFinding(id)}
+        compact={detent === "full"}
         bottom={HEIGHTS[detent]}
       />
 
       <div data-theme={theme} className="pointer-events-none absolute inset-0 z-20 text-fg [&>*]:pointer-events-auto">
-        <Sheet
-          detent={detent}
-          onDetentChange={setDetent}
-          heights={HEIGHTS}
-          label={`Scan ${scan.number} findings`}
-          header={header}
-          contentRef={(el) => {
-            sheetContent.current = el;
-          }}
-        >
+        <Sheet detent={detent} onDetentChange={setDetent} heights={HEIGHTS} label={`Scan ${scan.number} results`} header={header}>
           <div className="pb-10">
             <div className="px-5">
               {processing && <StageChecklist scan={scan} />}
@@ -205,18 +173,43 @@ export function DiscoverScreen({
 
               {scan.step === "done" && messages.length > 1 && (
                 <div className="space-y-1 pl-[56px]">
-                  {messages.slice(1).map((m, i) => (
-                    <p key={i} className="text-[14px] leading-snug text-muted">
+                  {messages.slice(1, 3).map((m, i) => (
+                    <p key={i} className="line-clamp-2 text-[14px] leading-snug text-muted">
                       {m}
                     </p>
                   ))}
                 </div>
               )}
+            </div>
 
+            {/* Re-check result first: the before/after is one tap away. */}
+            {scan.step === "done" &&
+              compared.map(({ finding, event }) => (
+                <BeforeAfterEntry key={finding.id} wt={wt} finding={finding} event={event} onOpen={() => onOpenFinding(finding.id, "compare")} />
+              ))}
+
+            {items.length > 0 && (
+              <ul className="mt-3 space-y-2 px-4" aria-label="Findings in this scan">
+                {items.map(({ finding }) => (
+                  <li key={finding.id}>
+                    <FindingRow
+                      finding={finding}
+                      summary={findingCaptionForScan(session, scan.id, finding)?.label.replace(/^#\d+ · /, "") ?? finding.details.locationInImage}
+                      selected={selectedFindingId === finding.id}
+                      onOpen={() => onOpenFinding(finding.id)}
+                    />
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            <div className="px-5">
               {scan.step === "done" && nudge && wt.hasImage(scan.id) && (
                 <div className="mt-3 flex items-center gap-3 rounded-[20px] bg-surface-2 px-3.5 py-3">
                   <Layers size={20} className="shrink-0 text-muted" />
-                  <p className="min-w-0 flex-1 text-[14px] leading-snug">{nudge.text}</p>
+                  <p className="min-w-0 flex-1 text-[14px] leading-snug" title={nudge.text}>
+                    Moved or fixed it? Re-check from this spot.
+                  </p>
                   <button
                     type="button"
                     onClick={() => onRecheck(scan.id)}
@@ -231,33 +224,6 @@ export function DiscoverScreen({
                 <RevisitQuestion key={earlierId} wt={wt} scanId={scan.id} earlierId={earlierId} busy={Boolean(checking)} onOpenScan={onOpenScan} />
               ))}
             </div>
-
-            {items.length > 0 && (
-              <ul className="mt-4 space-y-3 px-4">
-                {items.map(({ finding, role }) => (
-                  <li
-                    key={finding.id}
-                    ref={(el) => {
-                      cardRefs.current[finding.id] = el;
-                    }}
-                    className="scroll-mt-3"
-                  >
-                    <FindingCard
-                      wt={wt}
-                      finding={finding}
-                      role={role}
-                      scanId={scan.id}
-                      open={selectedFindingId === finding.id}
-                      asking={askingId === finding.id}
-                      onToggle={() => toggleCard(finding.id)}
-                      onAskChange={(on) => setAsk(finding.id, on)}
-                      onShowInPhoto={photo ? () => showInPhoto(finding.id) : undefined}
-                      onRecheck={isOpen(finding.status) && wt.hasImage(finding.lastSeenScanId) ? () => onRecheck(finding.lastSeenScanId) : undefined}
-                    />
-                  </li>
-                ))}
-              </ul>
-            )}
 
             {scan.step === "done" &&
               (scan.failedComparisons ?? []).map((f) => (
@@ -312,6 +278,61 @@ export function DiscoverScreen({
         <TrustSheet open={trustOpen} onClose={() => setTrustOpen(false)} />
       </div>
     </div>
+  );
+}
+
+/** One concise, tappable row per finding: number, type icon, title, one-line context, status, needs. */
+function FindingRow({ finding, summary, selected, onOpen }: { finding: TrackedFinding; summary: string; selected: boolean; onOpen: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      aria-label={`Finding ${finding.number}: ${finding.details.title}. ${STATUS_LABEL[finding.status]}. Open details`}
+      className={`pressable flex min-h-[68px] w-full items-center gap-3 rounded-[22px] bg-surface px-3.5 py-3 text-left shadow-[var(--shadow-soft)] transition-shadow ${selected ? "ring-2 ring-fg" : ""}`}
+    >
+      <span className={`grid size-9 shrink-0 place-items-center rounded-full text-[15px] font-bold ${selected ? "bg-primary text-on-primary" : "bg-surface-2"}`}>{finding.number}</span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[16px] font-semibold tracking-[-0.01em]">{finding.details.title}</span>
+        <span className="mt-1.5 flex items-center gap-2">
+          <BarrierIcon type={finding.details.barrierType} size={16} className="shrink-0 text-muted" />
+          <StatusTag status={finding.status} />
+          <NeedMarks who={finding.details.whoMayBeAffected} />
+        </span>
+        <span className="sr-only">{summary}</span>
+      </span>
+      <ChevronRight size={18} className="shrink-0 text-muted" />
+    </button>
+  );
+}
+
+/** The re-check result, surfaced first: two thumbnails and the status, opening the comparison. */
+function BeforeAfterEntry({ wt, finding, event, onOpen }: { wt: Walkthrough; finding: TrackedFinding; event: NonNullable<TrackedFinding["history"][number]>; onOpen: () => void }) {
+  const { beforeScan, nowScan, beforeUrl, nowUrl } = comparisonPhotos(wt, finding, event);
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="pressable animate-rise-in mx-4 mt-3 flex w-[calc(100%-2rem)] items-center gap-3 rounded-[22px] bg-surface p-3 text-left shadow-[var(--shadow-float)]"
+    >
+      <span className="relative flex shrink-0" aria-hidden>
+        {[beforeUrl, nowUrl].map((u, i) => (
+          <span key={i} className={`block size-14 overflow-hidden rounded-[14px] bg-surface-2 ring-2 ring-surface ${i ? "-ml-4" : ""}`}>
+            {/* eslint-disable-next-line @next/next/no-img-element -- local blob URL */}
+            {u && <img src={u} alt="" className="size-full object-cover" />}
+          </span>
+        ))}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center gap-1.5 text-[13px] font-semibold text-muted">
+          <Compare size={15} /> Before & after · scan {beforeScan?.number ?? "?"} → {nowScan?.number ?? "?"}
+        </span>
+        <span className="mt-0.5 block truncate text-[16px] font-semibold">#{finding.number} {finding.details.title}</span>
+        <span className="mt-1 block">
+          <StatusTag status={event.status} />
+        </span>
+      </span>
+      <ChevronRight size={18} className="shrink-0 text-muted" />
+    </button>
   );
 }
 

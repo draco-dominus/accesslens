@@ -3,6 +3,8 @@
 import { useRef, useState } from "react";
 import { findingCaptionForScan } from "@/lib/session/lumi";
 import type { Session, TrackedFinding } from "@/lib/session/types";
+import { ChevronRight } from "../ui/Icons";
+import { BarrierIcon } from "../ui/Needs";
 import { IridescentEdge } from "../ui/primitives";
 
 /**
@@ -28,6 +30,8 @@ export function PhotoStage({
   findings,
   selectedId,
   onSelect,
+  onOpenDetails,
+  compact = false,
   bottom,
 }: {
   photo?: string;
@@ -39,6 +43,10 @@ export function PhotoStage({
   findings: TrackedFinding[];
   selectedId: string | null;
   onSelect: (id: string | null) => void;
+  /** Open the full Finding Details screen. */
+  onOpenDetails?: (id: string) => void;
+  /** Little photo visible (sheet fully raised): hide references, zoom and caption. */
+  compact?: boolean;
   /** Space taken by the sheet below (CSS length); the photo fits above it. */
   bottom: string;
 }) {
@@ -126,18 +134,36 @@ export function PhotoStage({
         )}
       </div>
       <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_bottom,rgba(0,0,0,0.5),transparent_22%,transparent_70%,rgba(0,0,0,0.55))]" />
+      {/* Focus: the photo dims softly while one finding is being explored. */}
+      <div aria-hidden className={`pointer-events-none absolute inset-0 bg-black/30 transition-opacity duration-500 ${selectedCaption && !compact ? "opacity-100" : "opacity-0"}`} />
+      {/* Analysis in progress: a soft light sweep. It marks activity only; it never implies detections. */}
+      {processing && photo && <div aria-hidden className="scan-sweep pointer-events-none absolute inset-0" />}
       <IridescentEdge active={processing} ring={2.5} bloom={22} speed={5} />
 
-      {/* Evidence caption for the selected finding: the AI's own words, nothing drawn on the image. */}
-      {selectedCaption && (
-        <div className="animate-rise-in absolute inset-x-3 top-[calc(var(--safe-top)+58px)] rounded-[22px] border border-white/15 bg-black/55 px-4 py-3 text-white backdrop-blur-xl" aria-live="polite">
-          <p className="text-[13px] font-semibold text-white/80">{selectedCaption.label}</p>
-          <p className="mt-0.5 text-[15px] leading-snug">{selectedCaption.text}</p>
+      {/* Evidence caption for the selected finding, linked to its reference below. Words only: nothing is
+          drawn on the image, because no coordinates exist. */}
+      {selectedCaption && selected && !compact && (
+        <div className="absolute inset-x-3 bottom-[92px]" aria-live="polite">
+          <div key={selected.id} className="animate-rise-in rounded-[22px] border border-white/15 bg-black/65 px-4 pt-3 pb-2.5 text-white backdrop-blur-xl">
+            <p className="text-[13px] font-semibold text-white/80">{selectedCaption.label}</p>
+            <p className="mt-0.5 line-clamp-3 text-[15px] leading-snug">{selectedCaption.text}</p>
+            {onOpenDetails && (
+              <button
+                type="button"
+                onClick={() => onOpenDetails(selected.id)}
+                className="pressable mt-2 inline-flex min-h-10 items-center gap-1 rounded-full bg-white px-3.5 text-[14px] font-semibold text-black"
+              >
+                Details <ChevronRight size={16} />
+              </button>
+            )}
+          </div>
+          {/* Notch pointing down to the selected reference. */}
+          <span aria-hidden className="ml-7 block size-3 -translate-y-1.5 rotate-45 border-r border-b border-white/15 bg-black/65" />
         </div>
       )}
 
       {/* Zoom controls: an alternative to pinch/double-tap. */}
-      {photo && (
+      {photo && !compact && !selectedCaption && (
         <div className="absolute right-3 bottom-[76px] flex flex-col gap-1.5" role="group" aria-label="Photo zoom">
           <ZoomButton label="Zoom in" onClick={() => zoomBy(1.6)} disabled={view.scale >= MAX_ZOOM}>
             +
@@ -153,10 +179,10 @@ export function PhotoStage({
         </div>
       )}
 
-      {/* Finding rail: connects each finding to this photo. */}
-      {findings.length > 0 && (
+      {/* Numbered finding references: linked to the findings, not placed on the image. */}
+      {findings.length > 0 && !compact && (
         <div className="absolute inset-x-0 bottom-9 px-3">
-          <div className="no-scrollbar flex gap-1.5 overflow-x-auto pr-14" role="group" aria-label="Findings in this photo">
+          <div className="no-scrollbar flex gap-1.5 overflow-x-auto pr-3" role="group" aria-label="Finding references in this photo">
             {findings.map((f) => {
               const on = f.id === selectedId;
               return (
@@ -164,10 +190,13 @@ export function PhotoStage({
                   key={f.id}
                   type="button"
                   aria-pressed={on}
+                  aria-label={`Finding ${f.number}: ${f.details.title}${on ? ", selected" : ""}`}
                   onClick={() => onSelect(on ? null : f.id)}
-                  className={`pressable flex min-h-11 max-w-[78%] shrink-0 items-center gap-2 rounded-full border py-1.5 pr-3.5 pl-1.5 text-[14px] font-semibold backdrop-blur-xl ${on ? "border-white bg-white text-black" : "border-white/20 bg-black/50 text-white"}`}
+                  className={`pressable relative flex min-h-11 max-w-[80%] shrink-0 items-center gap-2 rounded-full border py-1.5 pr-3.5 pl-1.5 text-[14px] font-semibold backdrop-blur-xl transition-colors duration-300 ${on ? "border-white bg-white text-black" : "border-white/20 bg-black/55 text-white"}`}
                 >
+                  {on && <span key={`focus-${f.id}`} aria-hidden className="ref-focus pointer-events-none absolute inset-0 rounded-full" />}
                   <span className={`grid size-7 shrink-0 place-items-center rounded-full text-[13px] font-bold ${on ? "bg-black text-white" : "bg-white/15"}`}>{f.number}</span>
+                  <BarrierIcon type={f.details.barrierType} size={15} className="shrink-0 opacity-80" />
                   <span className="truncate">{f.details.title}</span>
                 </button>
               );

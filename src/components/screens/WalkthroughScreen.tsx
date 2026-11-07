@@ -172,8 +172,8 @@ export function WalkthroughScreen({
       )}
 
       <div className="mt-6 space-y-2">
-        <Button variant="secondary" className="w-full" onClick={onReport} icon={<Document size={19} />}>
-          View and export report
+        <Button className="w-full" onClick={onReport} icon={<Document size={19} />} disabled={!session.scans.some((sc) => sc.step === "done")}>
+          Download report
         </Button>
         {finished ? (
           <>
@@ -193,7 +193,7 @@ export function WalkthroughScreen({
           </>
         ) : (
           <>
-            <Button className="w-full" onClick={wt.finish} disabled={!finishable}>
+            <Button variant="secondary" className="w-full" onClick={wt.finish} disabled={!finishable}>
               Finish walkthrough
             </Button>
             {busyScan && (

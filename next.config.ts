@@ -1,7 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  // Load the libheif WASM build (HEIC decoding) from node_modules at runtime instead of bundling it.
+  // sharp is already on Next's built-in external list.
+  serverExternalPackages: ["heic-decode", "libheif-js"],
   turbopack: {
     rules: {
       "*.css": {

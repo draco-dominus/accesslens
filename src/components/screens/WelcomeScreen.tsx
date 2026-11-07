@@ -5,6 +5,7 @@ import { Sidekick, type LumiMood } from "../lumi/Sidekick";
 import { Arrow, Chat, Close, Moon, Pin, Route, Scan, Sun } from "../ui/Icons";
 import { Button, GlassIconButton } from "../ui/primitives";
 import type { Theme } from "../app/AccessLensApp";
+import { TrustList } from "../trust/TrustPanel";
 
 const STEPS = [
   { icon: Scan, title: "Scan", body: "Take a photo of an entrance, walkway or room." },
@@ -82,6 +83,9 @@ export function WelcomeScreen({
         >
           How Lumi works
         </Button>
+        <p className="px-4 text-center text-[12px] leading-snug text-muted">
+          An awareness tool that flags potential barriers from photos. Not an accessibility assessment or certification.
+        </p>
       </div>
 
       {/* How it works sheet */}
@@ -96,7 +100,7 @@ export function WelcomeScreen({
         aria-labelledby="how-title"
         aria-hidden={!howOpen}
         inert={!howOpen}
-        className={`absolute inset-x-2 bottom-2 z-40 rounded-[34px] border border-glass-line bg-glass-strong p-6 pt-3 shadow-[var(--shadow-float)] backdrop-blur-2xl backdrop-saturate-150 transition-[transform,opacity] duration-[560ms] ease-[var(--ease-ios)] ${howOpen ? "translate-y-0 opacity-100" : "translate-y-[110%] opacity-0"}`}
+        className={`absolute inset-x-2 bottom-2 z-40 max-h-[88%] overflow-y-auto overscroll-contain rounded-[34px] border border-glass-line bg-glass-strong p-6 pt-3 shadow-[var(--shadow-float)] backdrop-blur-2xl backdrop-saturate-150 transition-[transform,opacity] duration-[560ms] ease-[var(--ease-ios)] ${howOpen ? "translate-y-0 opacity-100" : "translate-y-[110%] opacity-0"}`}
       >
         <div className="mx-auto mb-4 h-[5px] w-10 rounded-full bg-[color-mix(in_srgb,var(--fg)_22%,transparent)]" />
         <div className="flex items-start justify-between">
@@ -128,10 +132,10 @@ export function WelcomeScreen({
             </li>
           ))}
         </ol>
-        <p className="mt-3 text-[13px] leading-snug text-muted">
-          Lumi’s observations come from AI analysis of your photos. They point out potential barriers to check. They can’t confirm a
-          space is accessible or meets any standard.
-        </p>
+        <h3 className="mt-5 text-[13px] font-semibold tracking-[0.04em] text-muted uppercase">What to expect</h3>
+        <div className="mt-3">
+          <TrustList compact />
+        </div>
         <Button
           className="mt-5 w-full"
           onClick={() => {

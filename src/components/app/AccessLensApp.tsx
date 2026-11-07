@@ -1,30 +1,40 @@
 "use client";
 
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { flushSync } from "react-dom";
 import { useWalkthrough } from "@/hooks/useWalkthrough";
-import { isOpen } from "@/lib/session/types";
 import { DiscoverScreen } from "../screens/DiscoverScreen";
 import { ScanScreen } from "../screens/ScanScreen";
-import { UnderstandScreen } from "../screens/UnderstandScreen";
 import { WalkthroughScreen } from "../screens/WalkthroughScreen";
 import { WelcomeScreen } from "../screens/WelcomeScreen";
-import { Chat, Close, Pin, Route, Scan } from "../ui/Icons";
+import { Close, Pin, Route, Scan } from "../ui/Icons";
 import { GlassIconButton } from "../ui/primitives";
 
 /**
  * AccessLens app shell, adapted from the Figma prototype's App.tsx.
- * Journey: Welcome → Start walkthrough → Scan → Discover → Understand → Scan again → Review walkthrough.
+ * Journey: Welcome → Start walkthrough → Scan → Discover (with Ask Lumi in each finding) → Scan again → Review walkthrough.
  * All data comes from useWalkthrough (real API calls + session engine); nothing here is mocked.
  */
 
 export type Theme = "light" | "dark";
-type Screen = "welcome" | "scan" | "discover" | "ask" | "walkthrough";
+type Screen = "welcome" | "scan" | "discover" | "walkthrough";
 
 const NAV = [
   { id: "discover", label: "Findings", icon: Pin },
-  { id: "ask", label: "Ask", icon: Chat },
   { id: "walkthrough", label: "Walkthrough", icon: Route },
 ] as const;
+
+/**
+ * Screen changes use the View Transitions API where available (Safari 18+, Chrome), so the scanned photo
+ * morphs between screens (`view-transition-name: scan-photo`). Falls back to the CSS screen animation;
+ * skipped entirely when the user prefers reduced motion.
+ */
+function withTransition(update: () => void) {
+  const doc = document as Document & { startViewTransition?: (cb: () => void) => unknown };
+  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (doc.startViewTransition && !reduced) doc.startViewTransition(() => flushSync(update));
+  else update();
+}
 
 function subscribeScheme(cb: () => void) {
   const mq = window.matchMedia("(prefers-color-scheme: dark)");
@@ -55,9 +65,9 @@ export function AccessLensApp() {
   const latestScan = scans.at(-1) ?? null;
   const currentScan = scans.find((s) => s.id === scanId) ?? latestScan;
   const hasScans = scans.length > 0;
-  const hasFindings = (session?.findings.length ?? 0) > 0;
+  const [askId, setAskId] = useState<string | null>(null);
 
-  const go = useCallback((s: Screen) => setScreen(s), []);
+  const go = useCallback((s: Screen) => withTransition(() => setScreen(s)), []);
   const toggleTheme = () => setOverride(theme === "dark" ? "light" : "dark");
 
   /** Open the camera. `lineUp`: pre-select an earlier scan to line up with (re-checking a finding). */
@@ -76,24 +86,13 @@ export function AccessLensApp() {
     go("discover");
   };
 
-  const openScan = (id: string, finding?: string) => {
+  const openScan = (id: string, finding?: string, ask = false) => {
     setScanId(id);
     setFreshScanId(null);
     setFindingId(finding ?? null);
+    setAskId(ask && finding ? finding : null);
     go("discover");
   };
-
-  const askAbout = (id: string) => {
-    setFindingId(id);
-    go("ask");
-  };
-
-  // Ask defaults to the selected finding, else the most recent open one, else the latest one.
-  const askFindingId =
-    findingId ??
-    [...(session?.findings ?? [])].reverse().find((f) => isOpen(f.status))?.id ??
-    session?.findings.at(-1)?.id ??
-    null;
 
   // Camera-led screens are always dark; others follow the chosen appearance.
   const chromeTheme: Theme = screen === "scan" || screen === "discover" ? "dark" : theme;
@@ -101,7 +100,7 @@ export function AccessLensApp() {
   return (
     <main className="grid min-h-dvh place-items-center bg-[#e8e8ea] transition-colors duration-500 dark:bg-[#050505] sm:p-6">
       <div
-        className="device relative h-dvh w-full overflow-hidden bg-bg text-fg sm:h-[min(880px,calc(100dvh-48px))] sm:w-[410px] sm:rounded-[56px] sm:shadow-[0_0_0_11px_#0a0a0a,0_0_0_12.5px_#3a3a3c,0_40px_100px_-20px_rgba(0,0,0,0.45)]"
+        className="device relative h-dvh w-full overflow-clip bg-bg text-fg sm:h-[min(880px,calc(100dvh-48px))] sm:w-[410px] sm:rounded-[56px] sm:shadow-[0_0_0_11px_#0a0a0a,0_0_0_12.5px_#3a3a3c,0_40px_100px_-20px_rgba(0,0,0,0.45)]"
         style={{ containerType: "size" }}
       >
         <div key={screen} className="animate-screen-in absolute inset-0">
@@ -124,27 +123,18 @@ export function AccessLensApp() {
           {screen === "scan" && <ScanScreen wt={wt} onCapture={onCaptured} initialLineUpScanId={lineUpTarget} />}
           {screen === "discover" && currentScan && (
             <DiscoverScreen
-              key={currentScan.id}
+              key={`${currentScan.id}:${askId ?? ""}`}
               wt={wt}
               scan={currentScan}
               fresh={freshScanId === currentScan.id}
               theme={theme}
               selectedFindingId={findingId}
+              initialAskId={askId}
               onSelectFinding={setFindingId}
-              onAsk={askAbout}
               onOpenScan={openScan}
               onScanAgain={() => startScan()}
               onRecheck={(id) => startScan(id)}
               onOpenWalkthrough={() => go("walkthrough")}
-            />
-          )}
-          {screen === "ask" && session && askFindingId && (
-            <UnderstandScreen
-              key={askFindingId}
-              wt={wt}
-              findingId={askFindingId}
-              onOpenScan={openScan}
-              onPickFinding={setFindingId}
             />
           )}
           {screen === "walkthrough" && (
@@ -153,7 +143,7 @@ export function AccessLensApp() {
               theme={theme}
               onToggleTheme={toggleTheme}
               onScan={startScan}
-              onOpenScan={openScan}
+              onOpenScan={(id, finding) => openScan(id, finding)}
               onRestart={() => {
                 wt.reset();
                 setScanId(null);
@@ -193,7 +183,7 @@ export function AccessLensApp() {
             aria-label="AccessLens"
             className="absolute inset-x-0 top-[var(--safe-top)] z-40 flex items-center justify-between gap-2 px-4 text-fg"
           >
-            {(screen === "ask" || screen === "walkthrough") && (
+            {screen === "walkthrough" && (
               <div
                 aria-hidden
                 className="pointer-events-none absolute inset-x-0 -top-[var(--safe-top)] -z-10 h-[calc(var(--safe-top)+64px)] bg-[linear-gradient(to_bottom,var(--bg)_55%,transparent)]"
@@ -212,7 +202,7 @@ export function AccessLensApp() {
             <div className="flex min-w-0 items-center gap-0.5 rounded-full border border-glass-line bg-glass p-1 shadow-[var(--shadow-soft)] backdrop-blur-xl backdrop-saturate-150">
               {NAV.map(({ id, label, icon: Icon }) => {
                 const active = screen === id;
-                const enabled = id === "walkthrough" ? Boolean(session) : id === "ask" ? hasFindings : hasScans;
+                const enabled = id === "walkthrough" ? Boolean(session) : hasScans;
                 return (
                   <button
                     key={id}

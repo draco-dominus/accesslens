@@ -1,5 +1,6 @@
 import type { FindingStatus, Scan, ScanEvent, Session, TrackedFinding } from "./types";
 import { isOpen } from "./types";
+import { firstSentence } from "../text";
 
 /**
  * Lumi's words, generated only from real session data. No findings are invented here: every
@@ -290,4 +291,87 @@ export function scanActivity(scan: Scan): { title: string; detail?: string } {
   return stages.some((st) => st.state === "done" && st.id !== "prepare")
     ? { title: "Putting the results together" }
     : { title: "Starting the analysis" };
+}
+
+/* ---------- Ask Lumi: answers grounded in recorded data only ---------- */
+
+export const LUMI_QUESTIONS = [
+  { id: "why", label: "Why could it matter?", icon: "spark" },
+  { id: "who", label: "Who might be affected?", icon: "people" },
+  { id: "fix", label: "What could help?", icon: "wrench" },
+  { id: "unknown", label: "What can’t you tell?", icon: "question" },
+  { id: "changed", label: "Has it changed?", icon: "history" },
+  { id: "next", label: "What’s still open?", icon: "list" },
+] as const;
+export type LumiQuestionId = (typeof LUMI_QUESTIONS)[number]["id"];
+
+/**
+ * Lumi's answer to a question about one finding, built ONLY from what's recorded: the AI analysis fields
+ * and the comparison history. No new AI call, nothing generated. `source` says where it came from.
+ */
+export function answerQuestion(s: Session, f: TrackedFinding, q: LumiQuestionId): { text: string; source: string } {
+  const d = f.details;
+  const first = `From scan ${scanNumber(s, f.firstScanId)}’s analysis`;
+  switch (q) {
+    case "why":
+      return { text: d.potentialImpact, source: first };
+    case "who":
+      return { text: `It could affect ${d.whoMayBeAffected.join(", ")}.`, source: first };
+    case "fix":
+      return { text: d.suggestedImprovement, source: first };
+    case "unknown": {
+      const scan = s.scans.find((sc) => sc.id === f.firstScanId);
+      return {
+        text: `${d.uncertainty}${scan?.analysis?.limitations ? ` More generally: ${scan.analysis.limitations}` : ""}`,
+        source: first,
+      };
+    }
+    case "changed": {
+      if (f.history.length < 2) {
+        return {
+          text: `I’ve only seen this in scan ${scanNumber(s, f.firstScanId)} so far. Take another photo from the same spot and I’ll compare the two.`,
+          source: "From your scan history",
+        };
+      }
+      const steps = f.history.slice(1).map((h) => `Scan ${scanNumber(s, h.scanId)}: ${STATUS_LABEL[h.status].toLowerCase()}. ${h.note}`);
+      return {
+        text: `${steps.join(" ")}${f.status === "appears_improved" ? " Please confirm it in person." : ""}`,
+        source: "From the comparisons in your scan history",
+      };
+    }
+    case "next": {
+      const open = s.findings.filter((x) => isOpen(x.status) && x.id !== f.id);
+      return {
+        text: open.length
+          ? `${progressLine(s)} Other open concerns: ${open.map((x) => `#${x.number} ${x.details.title}`).join("; ")}.`
+          : `${progressLine(s)} There are no other open concerns right now.`,
+        source: "From this walkthrough",
+      };
+    }
+  }
+}
+
+function scanNumber(s: Session, id: string) {
+  return s.scans.find((sc) => sc.id === id)?.number ?? "?";
+}
+
+/**
+ * What to say about a finding ON a given scan's photo. A caption must describe the photo it sits on:
+ * on a later scan, the original "what I saw" text describes a different photo, so it's not reused there.
+ *  - first seen in this scan → Lumi's described location + what it saw;
+ *  - compared in this scan → the comparison's observed change;
+ *  - seen again here (duplicate) → that note;
+ *  - otherwise (not part of this photo's results) → null.
+ */
+export function findingCaptionForScan(s: Session, scanId: string, f: TrackedFinding): { label: string; text: string } | null {
+  if (f.firstScanId === scanId) {
+    return { label: `#${f.number} · Where, as described by Lumi: ${f.details.locationInImage}`, text: firstSentence(f.details.visualEvidence) };
+  }
+  const here = f.history.filter((h) => h.scanId === scanId).at(-1);
+  if (!here) return null;
+  if (here.comparison) {
+    const ref = here.referenceScanId ? scanNumber(s, here.referenceScanId) : "?";
+    return { label: `#${f.number} · Compared with scan ${ref}: ${STATUS_LABEL[here.status].toLowerCase()}`, text: firstSentence(here.comparison.observedChange) };
+  }
+  return { label: `#${f.number} · ${STATUS_LABEL[here.status]} in this photo`, text: firstSentence(here.note) };
 }

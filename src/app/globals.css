@@ -87,6 +87,18 @@
   }
 }
 
+/* ---------- Lumi layer ----------
+   Two visual layers: the monochrome Apple-inspired shell (tokens above) and Lumi, the AI. Iridescent
+   light is Lumi's alone — use these tokens only where the AI is thinking, speaking or showing evidence,
+   never to decorate an ordinary control. */
+:root {
+  --lumi-blue: #8bb8ff;
+  --lumi-lavender: #b5a1ff;
+  --lumi-pink: #ffb6cf;
+  --lumi-coral: #ffb3a0;
+  --lumi-mint: #a8e8d5;
+}
+
 /* ---------- Iridescent light ---------- */
 @property --angle {
   syntax: "<angle>";
@@ -101,7 +113,15 @@
 }
 
 .iri-conic {
-  background: conic-gradient(from var(--angle), #8bb8ff, #b5a1ff, #ffb6cf, #ffb3a0, #a8e8d5, #8bb8ff);
+  background: conic-gradient(
+    from var(--angle),
+    var(--lumi-blue),
+    var(--lumi-lavender),
+    var(--lumi-pink),
+    var(--lumi-coral),
+    var(--lumi-mint),
+    var(--lumi-blue)
+  );
   animation: spin-angle 7s linear infinite;
 }
 
@@ -452,7 +472,22 @@
   }
 }
 
+/* ---------- Screen transitions (View Transitions API, where supported) ---------- */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 260ms;
+}
+::view-transition-group(scan-photo) {
+  animation-duration: 460ms;
+  animation-timing-function: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
 @media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
   *,
   *::before,
   *::after {

@@ -47,6 +47,8 @@ export function ScanScreen({
   const [cam, setCam] = useState<CamState>(() => (cameraSupported() ? "starting" : "unavailable"));
   const [flash, setFlash] = useState(0);
   const [ghostScanId, setGhostScanId] = useState<string | null>(initialLineUpScanId ?? null);
+  // The earlier-photo picker opens from the Line up control (already open when re-checking a finding).
+  const [lineUpOpen, setLineUpOpen] = useState(Boolean(initialLineUpScanId));
   const [areaSize, setAreaSize] = useState<Size | null>(null);
   const [videoSize, setVideoSize] = useState<Size | null>(null);
   const [ghostSize, setGhostSize] = useState<Size | null>(null);
@@ -152,7 +154,7 @@ export function ScanScreen({
     : busy
       ? `${scanActivity(busy).title}. You can keep scanning; I’ll queue the next photo.`
       : ghostOptions.length
-        ? `${openCount} ${openCount === 1 ? "concern is" : "concerns are"} still open. Re-checking one? Tap its photo under “Line up”.`
+        ? `${openCount} ${openCount === 1 ? "concern is" : "concerns are"} still open. Re-checking one? Tap Line up to match your earlier photo.`
         : "Point at an entrance, walkway or room. I look for steps, blocked paths and things sticking out.";
 
   return (
@@ -164,11 +166,15 @@ export function ScanScreen({
         {/* Space for the capture frame: below Lumi's capsule, above the controls. */}
         <div
           ref={area}
-          className={`absolute inset-x-2 top-[calc(var(--safe-top)+124px)] ${ghostOptions.length ? "bottom-[calc(var(--safe-bottom)+188px)]" : "bottom-[calc(var(--safe-bottom)+132px)]"}`}
+          className={`absolute inset-x-2 top-[calc(var(--safe-top)+124px)] ${ghostOptions.length && lineUpOpen ? "bottom-[calc(var(--safe-bottom)+204px)]" : "bottom-[calc(var(--safe-bottom)+148px)]"}`}
         >
           <div
             className="absolute overflow-hidden rounded-[26px] bg-black ring-1 ring-white/25 transition-[width,height,left,top] duration-300"
-            style={frame ? { left: frame.left, top: frame.top, width: frame.width, height: frame.height } : { inset: 0, opacity: 0 }}
+            style={{
+              ...(frame ? { left: frame.left, top: frame.top, width: frame.width, height: frame.height } : { inset: 0, opacity: 0 }),
+              // Morphs into the photo on the findings screen (see globals.css).
+              viewTransitionName: "scan-photo",
+            }}
           >
             <video
               ref={video}
@@ -208,10 +214,8 @@ export function ScanScreen({
 
       {/* Controls */}
       <div className="absolute inset-x-0 bottom-[calc(var(--safe-bottom)+12px)] z-10 px-4">
-        {ghostOptions.length > 0 && (
-          <div className="relative mx-auto mb-3 w-fit max-w-full rounded-full">
-            {/* A gentle glow while Line up is useful and unused, so it's noticed; it never blocks scanning. */}
-            {!ghost && <IridescentEdge active ring={1.5} bloom={10} speed={4} />}
+        {ghostOptions.length > 0 && lineUpOpen && (
+          <div className="animate-rise-in relative mx-auto mb-3 w-fit max-w-full rounded-full">
             <div
               role="radiogroup"
               aria-label="Line up with an earlier photo to re-check its findings"
@@ -245,15 +249,10 @@ export function ScanScreen({
           </div>
         )}
 
-        <div className="mt-2 flex items-center justify-center gap-8">
-          <button
-            type="button"
-            onClick={() => pickInput.current?.click()}
-            aria-label="Choose a photo from your library"
-            className="pressable grid size-12 place-items-center rounded-full border border-white/20 bg-white/10 text-white backdrop-blur-xl"
-          >
+        <div className="mt-2 flex items-start justify-center gap-8">
+          <ControlButton label="Library" onClick={() => pickInput.current?.click()} ariaLabel="Choose a photo from your library">
             <Photos size={21} />
-          </button>
+          </ControlButton>
           <button
             type="button"
             onClick={live ? captureFrame : () => takeInput.current?.click()}
@@ -263,12 +262,62 @@ export function ScanScreen({
             <IridescentEdge active={Boolean(busy)} ring={3} bloom={12} speed={2.4} />
             {live ? <span className="block size-[60px] rounded-full bg-white" /> : <Camera size={30} className="text-white" />}
           </button>
-          <span className="size-12" aria-hidden />
+          {ghostOptions.length > 0 ? (
+            <ControlButton
+              label="Line up"
+              onClick={() => setLineUpOpen((v) => !v)}
+              ariaLabel={ghost ? `Lined up with scan ${ghost.scan.number}. Change or turn off Line up` : "Line up with an earlier photo to re-check its findings"}
+              active={Boolean(ghost)}
+              expanded={lineUpOpen}
+              badge={!ghost}
+            >
+              <Layers size={21} />
+            </ControlButton>
+          ) : (
+            <span className="w-12" aria-hidden />
+          )}
         </div>
         <p className="mt-2 text-center text-[13px] font-medium text-white/85" aria-hidden>
           {live ? (ghost ? `Lined up with scan ${ghost.scan.number} · tap to scan` : "Tap to scan") : "Take or choose a photo"}
         </p>
       </div>
+    </div>
+  );
+}
+
+/** Side control in the capture bar: same shape and glass for Library and Line up. */
+function ControlButton({
+  label,
+  ariaLabel,
+  onClick,
+  children,
+  active = false,
+  expanded,
+  badge = false,
+}: {
+  label: string;
+  ariaLabel: string;
+  onClick: () => void;
+  children: React.ReactNode;
+  active?: boolean;
+  expanded?: boolean;
+  badge?: boolean;
+}) {
+  return (
+    <div className="flex w-14 flex-col items-center gap-1">
+      <button
+        type="button"
+        onClick={onClick}
+        aria-label={ariaLabel}
+        aria-expanded={expanded}
+        className={`pressable relative grid size-12 place-items-center rounded-full border backdrop-blur-xl ${active ? "border-white bg-white text-black" : "border-white/20 bg-white/10 text-white"}`}
+      >
+        {children}
+        {badge && <span aria-hidden className="absolute top-0.5 right-0.5 size-2.5 rounded-full border-2 border-black bg-white" />}
+      </button>
+      <span aria-hidden className="text-[11px] font-medium text-white/75">
+        {label}
+      </span>
     </div>
   );
 }

@@ -6,7 +6,7 @@ import { canFinish } from "@/lib/session/engine";
 import { progressLine, scanActivity, scanMood, walkthroughSummary } from "@/lib/session/lumi";
 import type { Session, TrackedFinding } from "@/lib/session/types";
 import { Sidekick } from "../lumi/Sidekick";
-import { ChevronRight, Moon, Scan, Sun } from "../ui/Icons";
+import { ChevronRight, Document, Moon, Scan, Sun } from "../ui/Icons";
 import { Button, GlassIconButton } from "../ui/primitives";
 import { AiBadge, StatusTag } from "../ui/Tags";
 import type { Theme } from "../app/AccessLensApp";
@@ -20,6 +20,7 @@ export function WalkthroughScreen({
   onToggleTheme,
   onScan,
   onOpenScan,
+  onReport,
   onRestart,
 }: {
   wt: Walkthrough;
@@ -27,6 +28,7 @@ export function WalkthroughScreen({
   onToggleTheme: () => void;
   onScan: () => void;
   onOpenScan: (scanId: string, findingId?: string) => void;
+  onReport: () => void;
   onRestart: () => void;
 }) {
   const session = wt.session;
@@ -91,12 +93,14 @@ export function WalkthroughScreen({
             </div>
           ))}
         </dl>
-        {wt.restored && (
+        {wt.restored && wt.photoRestore === "loading" && (
           <p className="mt-3 rounded-2xl bg-surface-2 px-3 py-2 text-[13px] leading-snug">
-            This walkthrough was restored after a reload. Findings are kept, but photos aren’t, so earlier spots can’t be compared
-            automatically. Scan them again to re-check.
+            Restoring this inspection’s photos from this device…
           </p>
         )}
+        {wt.restored && wt.photoRestore === "ready" && wt.restoredPhotoCount > 0 && <p className="mt-3 rounded-2xl bg-surface-2 px-3 py-2 text-[13px] leading-snug">This inspection and {wt.restoredPhotoCount === 1 ? "1 locally saved photo was" : `${wt.restoredPhotoCount} locally saved photos were`} restored on this device.</p>}
+        {wt.restored && wt.photoRestore === "ready" && wt.restoredPhotoCount === 0 && <p className="mt-3 rounded-2xl bg-surface-2 px-3 py-2 text-[13px] leading-snug">The finding notes were restored, but no saved photos were available on this device.</p>}
+        {wt.photoStorageWarning && <p className="mt-3 rounded-2xl bg-surface-2 px-3 py-2 text-[13px] leading-snug">{wt.photoStorageWarning}</p>}
       </section>
 
       {/* Concerns by status */}
@@ -168,6 +172,9 @@ export function WalkthroughScreen({
       )}
 
       <div className="mt-6 space-y-2">
+        <Button variant="secondary" className="w-full" onClick={onReport} icon={<Document size={19} />}>
+          View and export report
+        </Button>
         {finished ? (
           <>
             <Button

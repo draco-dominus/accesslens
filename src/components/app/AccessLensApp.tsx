@@ -4,10 +4,12 @@ import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { flushSync } from "react-dom";
 import { useWalkthrough } from "@/hooks/useWalkthrough";
 import { DiscoverScreen } from "../screens/DiscoverScreen";
+import { InspectionReport } from "../screens/InspectionReport";
 import { ScanScreen } from "../screens/ScanScreen";
 import { WalkthroughScreen } from "../screens/WalkthroughScreen";
 import { WelcomeScreen } from "../screens/WelcomeScreen";
-import { Close, Pin, Route, Scan } from "../ui/Icons";
+import { LumiPanel } from "../lumi/LumiPanel";
+import { Chat, Close, Home, Pin, Route, Scan } from "../ui/Icons";
 import { GlassIconButton } from "../ui/primitives";
 
 /**
@@ -17,7 +19,7 @@ import { GlassIconButton } from "../ui/primitives";
  */
 
 export type Theme = "light" | "dark";
-type Screen = "welcome" | "scan" | "discover" | "walkthrough";
+type Screen = "welcome" | "scan" | "discover" | "walkthrough" | "report";
 
 const NAV = [
   { id: "discover", label: "Findings", icon: Pin },
@@ -55,6 +57,8 @@ export function AccessLensApp() {
   const [freshScanId, setFreshScanId] = useState<string | null>(null);
   const [findingId, setFindingId] = useState<string | null>(null);
   const [lineUpTarget, setLineUpTarget] = useState<string | undefined>();
+  const [lumiOpen, setLumiOpen] = useState(false);
+  const [lumiFindingId, setLumiFindingId] = useState<string | null>(null);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -72,8 +76,10 @@ export function AccessLensApp() {
 
   /** Open the camera. `lineUp`: pre-select an earlier scan to line up with (re-checking a finding). */
   const startScan = (lineUp?: string) => {
+    setLumiOpen(false);
     setLineUpTarget(typeof lineUp === "string" ? lineUp : undefined);
     if (!session) wt.start();
+    else if (session.finishedAt !== null) wt.resume();
     setReturnTo(screen === "scan" ? returnTo : screen);
     go("scan");
   };
@@ -83,6 +89,7 @@ export function AccessLensApp() {
     setScanId(id);
     setFreshScanId(id);
     setFindingId(null);
+    setAskId(null);
     go("discover");
   };
 
@@ -94,6 +101,12 @@ export function AccessLensApp() {
     go("discover");
   };
 
+  const openLumi = (id?: string) => {
+    const preferred = id ?? findingId ?? [...(session?.findings ?? [])].reverse().find((finding) => finding.status !== "appears_improved")?.id ?? session?.findings.at(-1)?.id ?? null;
+    setLumiFindingId(preferred);
+    setLumiOpen(true);
+  };
+
   // Camera-led screens are always dark; others follow the chosen appearance.
   const chromeTheme: Theme = screen === "scan" || screen === "discover" ? "dark" : theme;
 
@@ -103,21 +116,17 @@ export function AccessLensApp() {
         className="device relative h-dvh w-full overflow-clip bg-bg text-fg sm:h-[min(880px,calc(100dvh-48px))] sm:w-[410px] sm:rounded-[56px] sm:shadow-[0_0_0_11px_#0a0a0a,0_0_0_12.5px_#3a3a3c,0_40px_100px_-20px_rgba(0,0,0,0.45)]"
         style={{ containerType: "size" }}
       >
-        <div key={screen} className="animate-screen-in absolute inset-0">
+        <div key={screen} className="screen-host animate-screen-in absolute inset-0">
           {screen === "welcome" && (
             <WelcomeScreen
+              session={session}
               theme={theme}
               onToggleTheme={toggleTheme}
-              canContinue={hasScans}
-              onStart={() => {
-                if (hasScans) wt.reset();
-                wt.start();
-                setScanId(null);
-                setFindingId(null);
-                setReturnTo("welcome");
-                go("scan");
-              }}
-              onContinue={() => go("walkthrough")}
+              onScan={() => startScan()}
+              onResume={() => latestScan && openScan(latestScan.id)}
+              onReview={() => go("walkthrough")}
+              onAsk={() => openLumi()}
+              onReport={() => go("report")}
             />
           )}
           {screen === "scan" && <ScanScreen wt={wt} onCapture={onCaptured} initialLineUpScanId={lineUpTarget} />}
@@ -144,6 +153,7 @@ export function AccessLensApp() {
               onToggleTheme={toggleTheme}
               onScan={startScan}
               onOpenScan={(id, finding) => openScan(id, finding)}
+              onReport={() => go("report")}
               onRestart={() => {
                 wt.reset();
                 setScanId(null);
@@ -152,6 +162,7 @@ export function AccessLensApp() {
               }}
             />
           )}
+          {screen === "report" && session && <InspectionReport session={session} media={wt.media} onBack={() => go("welcome")} />}
         </div>
 
         {/* Simulated status bar + Dynamic Island, framed desktop preview only (from the prototype). */}
@@ -181,7 +192,7 @@ export function AccessLensApp() {
           <nav
             data-theme={chromeTheme}
             aria-label="AccessLens"
-            className="absolute inset-x-0 top-[var(--safe-top)] z-40 flex items-center justify-between gap-2 px-4 text-fg"
+            className="no-print absolute inset-x-0 top-[var(--safe-top)] z-40 flex items-center justify-between gap-2 px-4 text-fg"
           >
             {screen === "walkthrough" && (
               <div
@@ -199,10 +210,16 @@ export function AccessLensApp() {
               </GlassIconButton>
             )}
 
+            {screen !== "scan" && (
+              <GlassIconButton onClick={() => go("welcome")} aria-label="Home">
+                <Home size={19} />
+              </GlassIconButton>
+            )}
+
             <div className="flex min-w-0 items-center gap-0.5 rounded-full border border-glass-line bg-glass p-1 shadow-[var(--shadow-soft)] backdrop-blur-xl backdrop-saturate-150">
-              {NAV.map(({ id, label, icon: Icon }) => {
+              {NAV.slice(0, 1).map(({ id, label, icon: Icon }) => {
                 const active = screen === id;
-                const enabled = id === "walkthrough" ? Boolean(session) : hasScans;
+                const enabled = hasScans;
                 return (
                   <button
                     key={id}
@@ -214,10 +231,35 @@ export function AccessLensApp() {
                       if (id === "discover") setFreshScanId(null);
                       go(id);
                     }}
-                    className={`pressable flex h-11 min-w-11 items-center justify-center gap-1.5 rounded-full text-[14px] font-semibold transition-[background-color,padding,color] duration-300 ease-[var(--ease-ios)] disabled:opacity-30 ${active ? "bg-primary px-4 text-on-primary" : "px-3 text-fg hover:bg-[color-mix(in_srgb,var(--fg)_8%,transparent)]"}`}
+                    className={`pressable flex size-11 items-center justify-center rounded-full transition-[background-color,color] duration-300 ease-[var(--ease-ios)] disabled:opacity-30 ${active ? "bg-primary text-on-primary" : "text-fg hover:bg-[color-mix(in_srgb,var(--fg)_8%,transparent)]"}`}
                   >
                     <Icon size={18} />
-                    {active && <span aria-hidden>{label}</span>}
+                  </button>
+                );
+              })}
+              <button
+                type="button"
+                disabled={!session}
+                aria-expanded={lumiOpen}
+                aria-label="Ask Lumi"
+                onClick={() => openLumi()}
+                className={`pressable flex size-11 items-center justify-center rounded-full transition-[background-color,color] duration-300 ease-[var(--ease-ios)] disabled:opacity-30 ${lumiOpen ? "bg-primary text-on-primary" : "text-fg hover:bg-[color-mix(in_srgb,var(--fg)_8%,transparent)]"}`}
+              >
+                <Chat size={18} />
+              </button>
+              {NAV.slice(1).map(({ id, label, icon: Icon }) => {
+                const active = screen === id;
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    disabled={!session}
+                    aria-current={active ? "page" : undefined}
+                    aria-label={label}
+                    onClick={() => go(id)}
+                    className={`pressable flex size-11 items-center justify-center rounded-full transition-[background-color,color] duration-300 ease-[var(--ease-ios)] disabled:opacity-30 ${active ? "bg-primary text-on-primary" : "text-fg hover:bg-[color-mix(in_srgb,var(--fg)_8%,transparent)]"}`}
+                  >
+                    <Icon size={18} />
                   </button>
                 );
               })}
@@ -238,6 +280,19 @@ export function AccessLensApp() {
             )}
           </nav>
         )}
+
+        <LumiPanel
+          open={lumiOpen}
+          session={session}
+          findingId={lumiFindingId}
+          onFindingChange={setLumiFindingId}
+          onClose={() => setLumiOpen(false)}
+          onOpenFinding={(finding) => {
+            setLumiOpen(false);
+            openScan(finding.history.at(-1)?.scanId ?? finding.lastSeenScanId, finding.id);
+          }}
+          onScan={() => startScan()}
+        />
       </div>
     </main>
   );

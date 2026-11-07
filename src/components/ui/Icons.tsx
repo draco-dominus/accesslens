@@ -176,3 +176,21 @@ export const Info = (p: P) => (
     <path d="M12 11v5.5M12 7.8h.01" />
   </Base>
 );
+export const Home = (p: P) => (
+  <Base {...p}>
+    <path d="M3.5 10.5L12 3.8l8.5 6.7" />
+    <path d="M5.5 9.5V20h13V9.5M9.5 20v-6h5v6" />
+  </Base>
+);
+export const Document = (p: P) => (
+  <Base {...p}>
+    <path d="M6 3.5h8l4 4V20H6z" />
+    <path d="M14 3.5V8h4M9 12h6M9 15.5h6" />
+  </Base>
+);
+export const Print = (p: P) => (
+  <Base {...p}>
+    <path d="M7 8V3.5h10V8M7 17H4.5A2.5 2.5 0 0 1 2 14.5v-4A2.5 2.5 0 0 1 4.5 8h15a2.5 2.5 0 0 1 2.5 2.5v4a2.5 2.5 0 0 1-2.5 2.5H17" />
+    <path d="M7 14h10v6.5H7zM18.5 11.5h.01" />
+  </Base>
+);

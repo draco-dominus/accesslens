@@ -1,13 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useRef, useState, type ReactNode } from "react";
 
 /**
  * Apple-style bottom sheet with three detents.
- *  - Drag the handle or the header; release snaps to the nearest detent, or one step in the direction
+ *  - Drag the dedicated handle; release snaps to the nearest detent, or one step in the direction
  *    of a quick flick. Rubber-band resistance past the lowest/highest detent.
- *  - Scroll handoff: pulling down on content that's scrolled to the top shrinks the sheet; pushing up on
- *    a lowered sheet raises it before the content scrolls.
+ *  - The content is a plain native scroll area. We deliberately do not intercept its touch events: this
+ *    preserves iOS momentum scrolling and avoids competing with photo gestures behind the sheet.
  *  - Keyboard: the handle is a button (Enter toggles, ↑/↓ step through detents).
  *  - Motion uses CSS transitions, so the global reduced-motion rule applies.
  */
@@ -97,49 +97,6 @@ export function Sheet({
     return true;
   };
 
-  // Scroll handoff on the content (native listeners: touchmove must be cancelable).
-  useEffect(() => {
-    const el = content.current;
-    if (!el) return;
-    let startY = 0;
-    let owning = false;
-    const onStart = (e: TouchEvent) => {
-      startY = e.touches[0].clientY;
-      owning = false;
-    };
-    const onMove = (e: TouchEvent) => {
-      const y = e.touches[0].clientY;
-      const dy = y - startY;
-      if (!owning) {
-        const atTop = el.scrollTop <= 0;
-        const pullDown = dy > TAP_SLOP && atTop && detent !== "peek";
-        const pushUp = dy < -TAP_SLOP && detent !== "full";
-        if (pullDown || pushUp) {
-          owning = true;
-          begin(startY);
-        }
-      }
-      if (owning) {
-        e.preventDefault();
-        move(y);
-      }
-    };
-    const onEnd = () => {
-      if (owning) end();
-      owning = false;
-    };
-    el.addEventListener("touchstart", onStart, { passive: true });
-    el.addEventListener("touchmove", onMove, { passive: false });
-    el.addEventListener("touchend", onEnd);
-    el.addEventListener("touchcancel", onEnd);
-    return () => {
-      el.removeEventListener("touchstart", onStart);
-      el.removeEventListener("touchmove", onMove);
-      el.removeEventListener("touchend", onEnd);
-      el.removeEventListener("touchcancel", onEnd);
-    };
-  });
-
   const step = (dir: 1 | -1) => {
     const i = ORDER.indexOf(detent);
     onDetentChange(ORDER[Math.max(0, Math.min(ORDER.length - 1, i + dir))]);
@@ -178,8 +135,9 @@ export function Sheet({
         className={`absolute inset-x-0 bottom-0 z-20 flex flex-col rounded-t-[34px] border border-b-0 border-glass-line bg-[var(--sheet)] shadow-[0_-12px_48px_-12px_rgba(0,0,0,0.35)] backdrop-blur-2xl backdrop-saturate-150 ${dragging ? "" : "transition-[height] duration-[520ms] ease-[var(--ease-ios)]"} ${className}`}
         style={{ height: `calc(${heights[detent]} - ${drag}px)` }}
       >
-        <div {...dragProps} className="shrink-0 cursor-grab touch-none select-none active:cursor-grabbing">
+        <div className="shrink-0 select-none">
           <button
+            {...dragProps}
             type="button"
             aria-label={`${label}: ${detent === "full" ? "fully open" : detent === "half" ? "half open" : "collapsed"}. Tap to ${detent === "full" ? "lower" : "raise"}.`}
             onClick={() => {
@@ -191,7 +149,7 @@ export function Sheet({
               e.preventDefault();
               step(e.key === "ArrowUp" ? 1 : -1);
             }}
-            className="flex h-8 w-full items-center justify-center"
+            className="flex h-11 w-full cursor-grab touch-none items-center justify-center active:cursor-grabbing"
           >
             <span className="h-[5px] w-10 rounded-full bg-[color-mix(in_srgb,var(--fg)_30%,transparent)]" />
           </button>
@@ -202,7 +160,7 @@ export function Sheet({
             content.current = el;
             contentRef?.(el);
           }}
-          className="no-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain"
+          className="no-scrollbar min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain [-webkit-overflow-scrolling:touch]"
         >
           {children}
         </div>

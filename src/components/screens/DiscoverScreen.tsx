@@ -160,7 +160,7 @@ export function DiscoverScreen({
       <PhotoStage
         photo={photo}
         alt={`Scan ${scan.number}${scan.analysis ? `: ${scan.analysis.sceneSummary}` : ""}`}
-        emptyText={wt.restored ? "Photos aren’t kept after the page reloads. Findings are still saved." : "Preparing photo…"}
+        emptyText={wt.photoRestore === "loading" ? "Restoring this photo from your device…" : wt.restored ? "This photo could not be restored. The finding notes are still available." : "Preparing photo…"}
         processing={processing || Boolean(checking)}
         session={session}
         scanId={scan.id}
@@ -294,6 +294,7 @@ export function DiscoverScreen({
 
             <div className="px-7 pt-5 text-center">
               {scan.analysis && !scan.analysis.imageUsable && <p className="text-[13px] leading-relaxed text-muted">{scan.analysis.limitations}</p>}
+              {wt.photoStorageWarning && <p className="mb-2 rounded-2xl bg-surface-2 px-3 py-2 text-[12px] leading-snug text-muted">{wt.photoStorageWarning}</p>}
               <button
                 type="button"
                 onClick={() => setTrustOpen(true)}

@@ -500,3 +500,52 @@
     background: none;
   }
 }
+
+/* Printable inspection report: remove the phone frame and app chrome without changing the live UI. */
+@media print {
+  @page {
+    margin: 14mm;
+  }
+  html,
+  body {
+    background: #fff !important;
+  }
+  main {
+    display: block !important;
+    min-height: 0 !important;
+    background: #fff !important;
+    padding: 0 !important;
+  }
+  .device {
+    width: auto !important;
+    height: auto !important;
+    overflow: visible !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+  }
+  .screen-host {
+    position: static !important;
+    animation: none !important;
+  }
+  .report-screen {
+    --bg: #fff;
+    --surface: #fff;
+    --surface-2: #f2f2f4;
+    --fg: #000;
+    --muted: #4f4f54;
+    --line: rgba(0, 0, 0, 0.14);
+    --primary: #000;
+    --on-primary: #fff;
+    height: auto !important;
+    overflow: visible !important;
+    padding: 0 !important;
+    background: #fff !important;
+    color: #000 !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+  .break-inside-avoid {
+    break-inside: avoid;
+  }
+}

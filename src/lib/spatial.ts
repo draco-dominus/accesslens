@@ -1,32 +1,36 @@
 /**
- * Grounded visual hazard indicators — UI side only.
+ * Grounded visual hazard indicators — UI side only. DISABLED.
  *
- * The analysis schema has NO coordinates today, so this returns nothing and no marker is ever drawn.
- * When the optional spatial-evidence field (being validated separately) ships, the server includes it
- * only for validated regions; this adapter is the single place that maps it for the UI, and it still
- * refuses anything out of range. Positions are never derived from text such as "center-left".
+ * Status (hackathon sprint): the experimental grounding evaluation produced one accurate chair box, one
+ * semantically wrong box reported with HIGH confidence, and no evidence for two signage photos. Model
+ * confidence is not proof of correctness, and there is no runtime check that a box encloses the right
+ * object, so overlays stay off. The production analysis schema doesn't request or keep spatial fields.
  *
- * Expected (provisional) shape on a finding: `spatialEvidence: { boxes: [{ x, y, width, height }] }`,
- * normalized to the photo (0–1, origin top-left). Adjust here when the final schema is agreed.
+ * When a verified source exists, this adapter maps Google's image-grounding convention used by the
+ * experimental schema — `spatialEvidence: { box: { yMin, xMin, yMax, xMax } (integers 0..1000 of the
+ * exact upright JPEG analyzed), target, groundingConfidence }` — to fractions for the UI, and still refuses
+ * anything malformed. Flip SPATIAL_OVERLAYS_ENABLED only with that verification in place.
+ * Positions are never derived from text such as "center-left".
  */
+
+export const SPATIAL_OVERLAYS_ENABLED = false;
 
 export type NormalizedBox = { x: number; y: number; width: number; height: number };
 
-const inUnit = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1;
+const grid = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 1000;
 
-function validBox(b: unknown): b is NormalizedBox {
-  if (!b || typeof b !== "object") return false;
-  const { x, y, width, height } = b as Record<string, unknown>;
-  return (
-    inUnit(x) && inUnit(y) && inUnit(width) && inUnit(height) &&
-    width > 0.005 && height > 0.005 && x + width <= 1.0001 && y + height <= 1.0001
-  );
-}
-
-/** Validated boxes for one finding's details; [] unless the data is present and entirely valid. */
-export function spatialBoxes(details: unknown): NormalizedBox[] {
-  const evidence = (details as { spatialEvidence?: unknown } | null)?.spatialEvidence;
-  const boxes = (evidence as { boxes?: unknown } | null | undefined)?.boxes;
-  if (!Array.isArray(boxes) || !boxes.length || boxes.length > 4) return [];
-  return boxes.every(validBox) ? boxes.map(({ x, y, width, height }) => ({ x, y, width, height })) : [];
+/** Fractional box from validated spatial evidence on a finding's details; [] when absent, invalid or disabled. */
+export function spatialBoxes(details: unknown, enabled = SPATIAL_OVERLAYS_ENABLED): NormalizedBox[] {
+  if (!enabled) return [];
+  const ev = (details as { spatialEvidence?: unknown } | null)?.spatialEvidence as
+    | { box?: Record<string, unknown>; groundingConfidence?: unknown; target?: unknown }
+    | undefined;
+  const b = ev?.box;
+  if (!b || typeof ev?.target !== "string" || !ev.target.trim() || !["medium", "high"].includes(String(ev.groundingConfidence))) return [];
+  const { yMin, xMin, yMax, xMax } = b;
+  if (!grid(yMin) || !grid(xMin) || !grid(yMax) || !grid(xMax) || yMin >= yMax || xMin >= xMax) return [];
+  const box = { x: xMin / 1000, y: yMin / 1000, width: (xMax - xMin) / 1000, height: (yMax - yMin) / 1000 };
+  // A box covering most of the photo says nothing about where the barrier is.
+  if (box.width * box.height > 0.6 || box.width < 0.01 || box.height < 0.01) return [];
+  return [box];
 }

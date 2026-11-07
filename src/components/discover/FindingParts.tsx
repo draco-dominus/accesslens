@@ -2,7 +2,7 @@
 
 import { useId, useState, type ReactNode } from "react";
 import type { useWalkthrough } from "@/hooks/useWalkthrough";
-import { STATUS_LABEL } from "@/lib/session/lumi";
+import { recheckHeadline, STATUS_LABEL } from "@/lib/session/lumi";
 import type { FindingEvent, TrackedFinding } from "@/lib/session/types";
 import { BeforeAfter } from "../ui/BeforeAfter";
 import { ChevronDown } from "../ui/Icons";
@@ -39,10 +39,11 @@ export function ComparisonEvidence({ wt, finding, event }: { wt: Walkthrough; fi
       <p className="text-[13px] font-semibold text-muted">
         Scan {beforeScan?.number ?? "?"} → scan {nowScan?.number ?? "?"} · {STATUS_LABEL[event.status]}
       </p>
+      <p className="mt-1 text-[19px] leading-tight font-semibold tracking-[-0.015em]">{recheckHeadline(finding, event).text}</p>
       <p className="mt-1.5 text-[16px] leading-[1.5]">{c.observedChange}</p>
       {beforeUrl && nowUrl && (
         <div className="mt-4">
-          <BeforeAfter earlier={beforeUrl} later={nowUrl} earlierLabel={`Scan ${beforeScan?.number}, earlier`} laterLabel={`Scan ${nowScan?.number}, now`} />
+          <BeforeAfter earlier={beforeUrl} later={nowUrl} earlierLabel={`Scan ${beforeScan?.number}, before`} laterLabel={`Scan ${nowScan?.number}, after`} />
         </div>
       )}
       <p className="mt-4 text-[14px] font-semibold">What the photos show</p>

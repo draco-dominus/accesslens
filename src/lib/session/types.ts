@@ -78,6 +78,8 @@ export type ScanStage = {
 export type ScanEvent =
   | { kind: "new_finding"; findingId: string }
   | { kind: "seen_again"; findingId: string }
+  /** A comparison ran and left the status unchanged (e.g. inconclusive again). Kept so the re-check stays visible. */
+  | { kind: "rechecked"; findingId: string; status: FindingStatus; referenceScanId: string }
   | { kind: "status_change"; findingId: string; from: FindingStatus; to: FindingStatus; referenceScanId: string }
   | { kind: "revisit"; scanId: string; sameArea: SameArea; decidedBy: RelationSource }
   | { kind: "revisit_question"; scanIds: string[] }

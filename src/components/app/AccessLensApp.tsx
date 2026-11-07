@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { flushSync } from "react-dom";
+import { useLumiChat } from "@/hooks/useLumiChat";
 import { useWalkthrough } from "@/hooks/useWalkthrough";
 import { DiscoverScreen } from "../screens/DiscoverScreen";
 import { FindingDetailScreen, isRecheckable } from "../screens/FindingDetailScreen";
@@ -50,6 +51,7 @@ const systemTheme = (): Theme => (window.matchMedia("(prefers-color-scheme: dark
 
 export function AccessLensApp() {
   const wt = useWalkthrough();
+  const chat = useLumiChat(wt.session);
   const system = useSyncExternalStore(subscribeScheme, systemTheme, () => "light" as Theme);
   const [override, setOverride] = useState<Theme | null>(null);
   const theme = override ?? system;
@@ -165,6 +167,7 @@ export function AccessLensApp() {
               onReview={() => go("walkthrough")}
               onAsk={(id) => openLumi(id)}
               onHome={() => go("welcome")}
+              onReport={() => openReport()}
             />
           )}
           {screen === "finding" && detail && detailFinding && (
@@ -182,6 +185,7 @@ export function AccessLensApp() {
           {screen === "ask" && (
             <AskLumiScreen
               session={session}
+              chat={chat}
               findingId={lumiFindingId}
               onFindingChange={setLumiFindingId}
               onBack={() => go(askReturn === "ask" || askReturn === "scan" ? (hasScans ? "discover" : "welcome") : askReturn)}
@@ -195,7 +199,11 @@ export function AccessLensApp() {
               theme={theme}
               onToggleTheme={toggleTheme}
               onScan={() => startScan()}
-              onOpenScan={(id, finding) => (finding ? openFinding(finding, id) : openScan(id))}
+              onOpenScan={(id, finding) => {
+                if (!finding) return openScan(id);
+                const compared = session?.findings.find((f) => f.id === finding)?.history.some((h) => h.comparison);
+                openFinding(finding, id, compared ? "compare" : undefined);
+              }}
               onReport={() => openReport()}
               onRestart={() => {
                 wt.reset();
@@ -205,14 +213,14 @@ export function AccessLensApp() {
               }}
             />
           )}
-          {screen === "report" && session && <InspectionReport session={session} media={wt.media} onBack={() => go(reportReturn)} />}
+          {screen === "report" && session && <InspectionReport session={session} media={wt.media} photoRestore={wt.photoRestore} onBack={() => go(reportReturn)} />}
         </div>
 
         {/* Simulated status bar + Dynamic Island, framed desktop preview only (from the prototype). */}
         <div
           aria-hidden
           data-theme={chromeTheme}
-          className="pointer-events-none absolute inset-x-0 top-0 z-50 hidden h-[50px] items-center justify-between px-9 pt-1 text-fg sm:flex"
+          className="no-print pointer-events-none absolute inset-x-0 top-0 z-50 hidden h-[50px] items-center justify-between px-9 pt-1 text-fg sm:flex"
         >
           <span className="w-14 text-[15px] font-semibold tracking-[-0.01em]">9:41</span>
           <span className="absolute top-[11px] left-1/2 h-[34px] w-[122px] -translate-x-1/2 rounded-full bg-black" />

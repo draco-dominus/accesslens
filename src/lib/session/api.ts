@@ -1,6 +1,7 @@
 "use client";
 
 import type { Analysis, AnalyzeResponse } from "../analysis-schema";
+import type { ChatRequest, ChatSuccess } from "../chat-schema";
 import type { CompareResponse, CompareSuccess } from "../comparison-schema";
 import type { MatchRequestContext, MatchResponse, MatchSuccess } from "../match-schema";
 
@@ -252,4 +253,48 @@ export async function makeThumbnail(blob: Blob, maxEdge = 320, quality = 0.75): 
   } finally {
     bitmap.close();
   }
+}
+
+/* ---------- Ask Lumi ---------- */
+
+/** Client wait limit: the server gives the model ≤18 s; this only guards against a hung connection. */
+const CHAT_CLIENT_TIMEOUT_MS = 30_000;
+
+/**
+ * Ask Lumi a free-text question (POST /api/chat, JSON, text only — no photos). One request per call:
+ * never retried automatically. On 429 the error message includes the wait the server asked for.
+ */
+export async function askLumi(body: ChatRequest, signal?: AbortSignal): Promise<ChatSuccess> {
+  const timeout = AbortSignal.timeout(CHAT_CLIENT_TIMEOUT_MS);
+  const combined = signal ? anySignal(signal, timeout) : timeout;
+  let res: Response;
+  try {
+    res = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: combined });
+  } catch (err) {
+    if (signal?.aborted) throw err; // the caller cancelled (finding/inspection changed)
+    if (timeout.aborted) throw new ApiClientError("AI_TIMEOUT", "Lumi took too long to answer. Please try again.", 0);
+    throw new ApiClientError("NETWORK", "Couldn't reach Lumi. Check your connection and try again.", 0);
+  }
+  if (!res.ok) {
+    const error = await toError(res);
+    const wait = Number(res.headers.get("retry-after"));
+    if (res.status === 429 && Number.isFinite(wait) && wait > 0) {
+      throw new ApiClientError(error.code, `${error.message} (about ${Math.ceil(wait)} s)`, res.status);
+    }
+    throw error;
+  }
+  const data = (await res.json().catch(() => null)) as ChatSuccess | null;
+  if (!data || data.ok !== true || typeof data.answer !== "string") throw new ApiClientError("BAD_RESPONSE", "Lumi sent an answer we couldn't read. Please try again.", res.status);
+  return data;
+}
+
+/** AbortSignal.any with a fallback for older Safari (< 17.4). */
+function anySignal(a: AbortSignal, b: AbortSignal): AbortSignal {
+  if (typeof AbortSignal.any === "function") return AbortSignal.any([a, b]);
+  const ctrl = new AbortController();
+  const stop = () => ctrl.abort();
+  if (a.aborted || b.aborted) ctrl.abort();
+  a.addEventListener("abort", stop, { once: true });
+  b.addEventListener("abort", stop, { once: true });
+  return ctrl.signal;
 }

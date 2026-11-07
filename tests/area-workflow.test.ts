@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { areaOf, areas, recheckTarget } from "../src/lib/session/areas";
+import { areaOf, areas, recheckOutcome, recheckTarget } from "../src/lib/session/areas";
 import * as E from "../src/lib/session/engine";
 import { runScanPipeline, type PipelineDeps } from "../src/lib/session/pipeline";
 import type { Session } from "../src/lib/session/types";
@@ -124,11 +124,13 @@ describe("re-check this area", () => {
     assert.deepEqual(s.findings.filter((f) => f.id !== "C-f0").map((f) => f.status), ["observed", "observed"], "A and B untouched");
   });
 
-  it("a re-check whose photos show a different place changes nothing, and is still filed under that area", async () => {
+  it("a re-check whose photos show a different place changes nothing and is NOT filed under that area", async () => {
     const { s: before } = await threeAreas();
     const { s } = await scan(before, "C2", { findings: [], compare: "improved", sameLocation: "no" }, "C");
     assert.equal(s.findings.find((f) => f.id === "C-f0")!.status, "observed");
-    assert.equal(areaOf(s, "C2")!.number, 3);
+    assert.equal(recheckOutcome(s.scans.find((x) => x.id === "C2")!), "rejected");
+    assert.equal(areaOf(s, "C2")!.number, 4, "its own area, not Area 3");
+    assert.equal(areaOf(s, "C")!.scans.length, 1);
   });
 
   it("nothing to re-check when the area has no open findings or no photo", async () => {
@@ -139,20 +141,29 @@ describe("re-check this area", () => {
   });
 });
 
-describe("grounded visual indicators: only validated coordinates", () => {
-  it("draws nothing without spatial evidence (today's schema)", () => {
+describe("grounded visual indicators: disabled, and strict when enabled", () => {
+  const ev = (box: object, extra: object = {}) => ({ ...CHAIR, spatialEvidence: { box, target: "black chair", groundingConfidence: "high", ...extra } });
+  const good = { yMin: 300, xMin: 150, yMax: 750, xMax: 600 };
+
+  it("is off for this release: nothing is drawn even for a well-formed box", () => {
+    assert.deepEqual(spatialBoxes(ev(good)), []);
     assert.deepEqual(spatialBoxes(CHAIR), []);
-    assert.deepEqual(spatialBoxes(null), []);
   });
 
-  it("accepts normalized boxes inside the photo", () => {
-    const d = { ...CHAIR, spatialEvidence: { boxes: [{ x: 0.1, y: 0.4, width: 0.3, height: 0.35 }] } };
-    assert.deepEqual(spatialBoxes(d), [{ x: 0.1, y: 0.4, width: 0.3, height: 0.35 }]);
+  it("when enabled, maps Google's 0..1000 grid (y before x) to fractions of the analyzed photo", () => {
+    assert.deepEqual(spatialBoxes(ev(good), true), [{ x: 0.15, y: 0.3, width: 0.45, height: 0.45 }]);
   });
 
-  it("rejects the whole set if any box is out of range, empty or malformed", () => {
-    for (const box of [{ x: 0.8, y: 0.1, width: 0.4, height: 0.2 }, { x: -0.1, y: 0, width: 0.2, height: 0.2 }, { x: 0.1, y: 0.1, width: 0, height: 0.2 }, { x: "0.1", y: 0.1, width: 0.2, height: 0.2 }, { x: 10, y: 20, width: 30, height: 40 }]) {
-      assert.deepEqual(spatialBoxes({ spatialEvidence: { boxes: [{ x: 0.1, y: 0.1, width: 0.2, height: 0.2 }, box] } }), [], JSON.stringify(box));
-    }
+  it("when enabled, still refuses low confidence, missing targets, malformed, inverted or scene-wide boxes", () => {
+    const bad = [
+      ev(good, { groundingConfidence: "low" }),
+      ev(good, { target: " " }),
+      ev({ ...good, xMax: 1200 }),
+      ev({ ...good, yMin: 800 }),
+      ev({ ...good, xMin: 10.5 }),
+      ev({ yMin: 0, xMin: 0, yMax: 1000, xMax: 900 }),
+      { ...CHAIR, spatialEvidence: { boxes: [{ x: 0.1, y: 0.1, width: 0.2, height: 0.2 }] } },
+    ];
+    for (const d of bad) assert.deepEqual(spatialBoxes(d, true), [], JSON.stringify((d as { spatialEvidence?: unknown }).spatialEvidence));
   });
 });

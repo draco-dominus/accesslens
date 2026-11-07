@@ -255,6 +255,9 @@ function applyUpdates(s: Session, scanId: string, updates: StatusUpdate[], now: 
       events.push({ kind: "status_change", findingId: f.id, from: f.status, to: u.status, referenceScanId: u.referenceScanId });
     } else if (u.seenInNewScan) {
       events.push({ kind: "seen_again", findingId: f.id });
+    } else if (u.source === "comparison") {
+      // Same status again (e.g. still inconclusive): still a real re-check of this finding in this scan.
+      events.push({ kind: "rechecked", findingId: f.id, status: u.status, referenceScanId: u.referenceScanId });
     }
     return {
       ...f,
@@ -509,10 +512,23 @@ export function applyUserRevisit(
   const scan = getScan(s, scanId);
   const earlier = getScan(s, earlierScanId);
   if (!scan || !earlier) return s;
-  const events: ScanEvent[] = [{ kind: "revisit", scanId: earlierScanId, sameArea: "yes", decidedBy: "user" }];
-
   const verdicts = comparisonVerdicts(comparisons, earlierScanId);
   const areaVerdict = reconcileArea("unclear", verdicts); // the user's "yes" can't override disagreeing photos
+  // The photos contradicted the user's "same place" (different spot, or comparisons disagree): don't
+  // group this scan with that area or call it the same place. With no comparison evidence at all (every
+  // comparison failed), nothing contradicts the user, so their answer stands.
+  const rejected = verdicts.length > 0 && areaVerdict !== "yes" && areaVerdict !== "likely";
+  const events: ScanEvent[] = rejected
+    ? [
+        {
+          kind: "notice",
+          message:
+            areaVerdict === "no"
+              ? `The photos don’t look like the same spot as scan ${earlier.number}, so I kept this as a separate area.`
+              : `The comparisons disagreed about whether this is the same spot as scan ${earlier.number}, so I kept this as a separate area.`,
+        },
+      ]
+    : [{ kind: "revisit", scanId: earlierScanId, sameArea: "yes", decidedBy: "user" }];
   const updates: StatusUpdate[] = [];
   for (const outcome of comparisons) {
     const u = decideUpdate(outcome.findingId, outcome, false, earlierScanId, true);
@@ -526,10 +542,12 @@ export function applyUserRevisit(
 
   const next = updateScan(applied.session, scanId, (sc) => ({
     ...sc,
-    areaId: earlier.areaId ?? sc.areaId,
+    areaId: rejected ? sc.areaId : (earlier.areaId ?? sc.areaId),
     relations: [
       ...sc.relations.filter((r) => r.scanId !== earlierScanId),
-      { scanId: earlierScanId, sameArea: "yes", decidedBy: "user", evidence: "Confirmed by you.", comparisonVerdicts: verdicts },
+      rejected
+        ? { scanId: earlierScanId, sameArea: areaVerdict, decidedBy: "user", evidence: "You said this was the same place, but the photos disagreed.", comparisonVerdicts: verdicts }
+        : { scanId: earlierScanId, sameArea: "yes", decidedBy: "user", evidence: "Confirmed by you.", comparisonVerdicts: verdicts },
     ],
     pendingRevisit: sc.pendingRevisit.filter((id) => id !== earlierScanId),
     comparedWith: [...new Set([...sc.comparedWith, ...succeededRefs(comparisons)])],
@@ -672,12 +690,17 @@ export function applyRetriedComparison(s: Session, scanId: string, outcome: Comp
   const verdicts = [...(prior?.comparisonVerdicts ?? []), outcome.result.comparison.sameLocation];
   const userConfirmed = entry.source === "user";
   const areaVerdict = userConfirmed ? reconcileArea("unclear", verdicts) : reconcileArea(prior?.sceneVerdict ?? prior?.sameArea ?? "unclear", verdicts);
+  // A user's "same place" stands only while no photo evidence contradicts it.
+  const userVerdict: SameArea = areaVerdict === "yes" || areaVerdict === "likely" ? "yes" : areaVerdict;
   const relation: ScanRelation = prior
-    ? { ...prior, comparisonVerdicts: verdicts, sameArea: userConfirmed ? prior.sameArea : areaVerdict }
+    ? { ...prior, comparisonVerdicts: verdicts, sameArea: userConfirmed ? userVerdict : areaVerdict }
     : { scanId: ref, sameArea: areaVerdict, decidedBy: entry.source, evidence: "Checked by comparing the photos.", comparisonVerdicts: verdicts };
   const relations = [...scan.relations.filter((r) => r.scanId !== ref), relation];
 
   const wasYes = prior?.sameArea === "yes";
+  if (userConfirmed && wasYes && relation.sameArea !== "yes") {
+    events.push({ kind: "notice", message: `A closer comparison disagreed that this is the same spot as scan ${earlier.number}, so I no longer treat it as the same area.` });
+  }
   if (!userConfirmed && relation.sameArea !== prior?.sameArea) {
     if (relation.sameArea === "yes" || relation.sameArea === "likely") {
       events.push({ kind: "revisit", scanId: ref, sameArea: relation.sameArea, decidedBy: entry.source });

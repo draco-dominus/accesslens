@@ -8,7 +8,10 @@ import { firstSentence, isWhole } from "@/lib/text";
 import { ComparisonEvidence, Disclosure, DuplicatePrompt, History, latestComparison } from "../discover/FindingParts";
 import { Sidekick } from "../lumi/Sidekick";
 import { TrustSheet } from "../trust/TrustPanel";
-import { Chat, ChevronLeft, Compare, Eye, History as HistoryIcon, Info, Layers, Question, Scan, Wrench } from "../ui/Icons";
+import { areaOf } from "@/lib/session/areas";
+import { spatialBoxes } from "@/lib/spatial";
+import { PhotoViewer, ScanPhoto } from "../discover/PhotoStage";
+import { Chat, ChevronLeft, Compare, Eye, History as HistoryIcon, Info, Layers, Question, Wrench } from "../ui/Icons";
 import { BarrierIcon, NeedIcon } from "../ui/Needs";
 import { Button, GlassIconButton } from "../ui/primitives";
 import { barrierTypeLabel, StatusTag } from "../ui/Tags";
@@ -16,7 +19,7 @@ import { barrierTypeLabel, StatusTag } from "../ui/Tags";
 type Walkthrough = ReturnType<typeof useWalkthrough>;
 
 /**
- * Finding Details, visual-first: the issue, who it may affect, and ONE suggested action up front.
+ * Finding Details, visual-first: the photo, the issue, who it may affect, and ONE suggested action up front.
  * Everything else (evidence, impact, uncertainty, before/after, history) sits in clearly labeled
  * sections that start collapsed. Every line comes from recorded data; nothing is generated to fill space.
  */
@@ -26,7 +29,6 @@ export function FindingDetailScreen({
   scanId,
   section,
   onBack,
-  onShowInPhoto,
   onAsk,
   onRecheck,
 }: {
@@ -37,7 +39,6 @@ export function FindingDetailScreen({
   /** Open with this section expanded and in view (after a re-check: the before/after comparison). */
   section?: "compare";
   onBack: () => void;
-  onShowInPhoto: () => void;
   onAsk: () => void;
   onRecheck?: () => void;
 }) {
@@ -51,6 +52,10 @@ export function FindingDetailScreen({
   const needs = accessibilityNeeds(d.whoMayBeAffected);
   const action = firstSentence(d.suggestedImprovement);
   const [trustOpen, setTrustOpen] = useState(false);
+  const [viewer, setViewer] = useState(false);
+  const area = areaOf(session, scanId);
+  const markers = spatialBoxes(d).map((box) => ({ number: finding.number, box }));
+  const alt = `Area ${area?.number ?? "?"}, scan ${scan?.number ?? "?"}${scan?.analysis ? `: ${scan.analysis.sceneSummary}` : ""}`;
   const scroller = useRef<HTMLDivElement>(null);
   const compareRef = useRef<HTMLDivElement>(null);
 
@@ -75,7 +80,7 @@ export function FindingDetailScreen({
             onClick={onBack}
             className="pressable flex h-11 items-center gap-1 rounded-full border border-glass-line bg-glass pr-4 pl-2.5 text-[15px] font-semibold shadow-[var(--shadow-soft)] backdrop-blur-xl"
           >
-            <ChevronLeft size={19} /> {scan ? `Scan ${scan.number} photo` : "Photo"}
+            <ChevronLeft size={19} /> {area ? `Area ${area.number}` : "Back"}
           </button>
           <span className="flex-1" />
           <GlassIconButton onClick={onAsk} aria-label={`Ask Lumi about finding ${finding.number}`}>
@@ -83,13 +88,10 @@ export function FindingDetailScreen({
           </GlassIconButton>
         </header>
 
-        {/* The photo, unobstructed; tap to inspect it with this finding selected. */}
-        {photo && (
-          <button type="button" onClick={onShowInPhoto} aria-label={`Show finding ${finding.number} on the scan ${scan?.number} photo`} className="pressable mx-4 block w-[calc(100%-2rem)] overflow-hidden rounded-[28px] bg-black">
-            {/* eslint-disable-next-line @next/next/no-img-element -- local blob URL */}
-            <img src={photo} alt={`Scan ${scan?.number}${scan?.analysis ? `: ${scan.analysis.sceneSummary}` : ""}`} className="max-h-[34cqh] w-full object-contain" style={{ viewTransitionName: "scan-photo" }} />
-          </button>
-        )}
+        {/* The photo, unobstructed; tap for full screen and zoom. */}
+        <div className="px-4">
+          <ScanPhoto photo={photo} alt={alt} emptyText="This photo isn’t available on this device." markers={markers} maxHeight="36cqh" onOpen={photo ? () => setViewer(true) : undefined} />
+        </div>
 
         {/* 1 · The issue */}
         <div className="px-5 pt-5">
@@ -124,11 +126,6 @@ export function FindingDetailScreen({
             <Wrench size={16} /> Suggested action
           </p>
           <p className="mt-1.5 text-[18px] leading-snug font-semibold tracking-[-0.01em]">{action}</p>
-          {onRecheck && (
-            <Button size="md" variant="secondary" className="mt-3" icon={<Layers size={17} />} onClick={onRecheck}>
-              Re-check this spot
-            </Button>
-          )}
         </div>
 
         {finding.firstScanId === scanId && (
@@ -174,7 +171,7 @@ export function FindingDetailScreen({
                 </div>
               )}
             </dl>
-            <p className="mt-3 text-[12px] leading-snug text-muted">Locations are described in words. AccessLens doesn’t draw detection boxes on photos.</p>
+            {!markers.length && <p className="mt-3 text-[12px] leading-snug text-muted">Locations are described in words; nothing is marked on the photo without verified positions.</p>}
           </Disclosure>
 
           <Disclosure icon={<Info size={17} />} label="Why it matters">
@@ -218,9 +215,11 @@ export function FindingDetailScreen({
 
       {/* Primary actions */}
       <div className="absolute inset-x-0 bottom-0 z-20 flex gap-2 border-t border-glass-line bg-glass-strong px-4 pt-3 pb-[calc(var(--safe-bottom)+10px)] backdrop-blur-2xl">
-        <Button variant="secondary" size="md" className="h-12 flex-1" icon={<Scan size={17} />} onClick={onShowInPhoto} disabled={!photo}>
-          Show in photo
-        </Button>
+        {onRecheck && (
+          <Button variant="secondary" size="md" className="h-12 flex-1" icon={<Layers size={17} />} onClick={onRecheck}>
+            Re-check
+          </Button>
+        )}
         <button type="button" onClick={onAsk} className="pressable flex h-12 flex-1 items-center justify-center gap-2 rounded-full bg-primary text-[15px] font-semibold text-on-primary">
           <span aria-hidden>
             <Sidekick mood="ready" size={24} halo={false} float={false} />
@@ -229,6 +228,7 @@ export function FindingDetailScreen({
         </button>
       </div>
 
+      {viewer && photo && <PhotoViewer photo={photo} alt={alt} markers={markers} onClose={() => setViewer(false)} />}
       <TrustSheet open={trustOpen} onClose={() => setTrustOpen(false)} />
     </div>
   );

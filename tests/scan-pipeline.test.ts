@@ -73,7 +73,7 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 const signal = () => new AbortController().signal;
 
 describe("scan pipeline: concurrency", () => {
-  it("runs scene matching concurrently with analysis (not after it)", async () => {
+  it("new area: runs scene matching concurrently with analysis, and NEVER compares automatically", async () => {
     const s = session();
     const api = fakeApi(s);
     const p = runScanPipeline(api.deps, "new", new Blob(["x"]), { signal: signal() });
@@ -83,13 +83,12 @@ describe("scan pipeline: concurrency", () => {
 
     api.next("match").resolve(matchResult([["s1", "yes"]]));
     await tick();
-    assert.deepEqual(api.log, ["analyze", "match", "compare"], "comparison starts while analysis is still running");
-
-    api.next("compare").resolve({ result: cmpResult("improved") });
-    api.next("analyze").resolve({ analysis: analysis([]), model: "g" });
+    api.next("analyze").resolve({ analysis: analysis([chair]), model: "g" });
     const r = await p;
-    assert.equal(r.comparisons.length, 1);
-    assert.deepEqual(api.log, ["analyze", "match", "compare"], "common rescan: 1 analyze + 1 match + 1 compare, no extra requests");
+    assert.equal(r.intent, "new_area");
+    assert.deepEqual(r.comparisons, [], "even a confident 'same area' match doesn't start a comparison");
+    assert.deepEqual(api.log, ["analyze", "match"], "no compare, no duplicate follow-up");
+    assert.equal(r.match!.candidates[0].sameArea, "yes", "the match is kept, to suggest a re-check");
   });
 
   it("with no open findings anywhere, only analysis runs", async () => {
@@ -162,44 +161,47 @@ describe("scan pipeline: line up", () => {
 });
 
 describe("scan pipeline: duplicate check only when needed", () => {
-  it("runs a follow-up duplicate check when a new finding could repeat an open one in a confirmed area", async () => {
+  it("re-check: runs a follow-up duplicate check when a new finding could repeat an open one at a confirmed spot", async () => {
     const api = fakeApi(session());
-    const p = runScanPipeline(api.deps, "new", new Blob(["x"]), { signal: signal() });
+    const p = runScanPipeline(api.deps, "new", new Blob(["x"]), { signal: signal(), lineUpScanId: "s1" });
     await tick();
-    api.next("match").resolve(matchResult([["s1", "yes"]]));
-    await tick();
-    api.next("compare").resolve({ result: cmpResult("still_present") });
+    api.next("compare").resolve({ result: cmpResult("still_present", "yes") });
     api.next("analyze").resolve({ analysis: analysis([chair]), model: "g" });
     await tick();
     assert.equal(api.log.at(-1), "match(dedupe)");
-    assert.deepEqual(api.next("match", 1).ctx!.candidates.map((c) => c.scanId), ["s1"]);
-    api.next("match", 1).resolve(matchResult([["s1", "yes"]], [[0, "s1-f0"]]));
+    assert.deepEqual(api.next("match").ctx!.candidates.map((c) => c.scanId), ["s1"]);
+    api.next("match").resolve(matchResult([["s1", "yes"]], [[0, "s1-f0"]]));
     const r = await p;
+    assert.equal(r.intent, "recheck");
     assert.deepEqual(r.match!.duplicates, [{ newFindingIndex: 0, findingId: "s1-f0" }]);
-    assert.equal(r.match!.candidates[0].sameArea, "yes", "scene verdicts from the first check are kept");
   });
 
-  it("skips it when barrier types differ, or the area is only 'likely'", async () => {
-    for (const [verdict, finding] of [["yes", stairs], ["likely", chair]] as const) {
+  it("skips it when barrier types differ, the spot isn't confirmed, or it's a new area", async () => {
+    for (const [lineUp, sameLocation, finding] of [["s1", "yes", stairs], ["s1", "likely", chair], [undefined, "yes", chair]] as const) {
       const api = fakeApi(session());
-      const p = runScanPipeline(api.deps, "new", new Blob(["x"]), { signal: signal() });
+      const p = runScanPipeline(api.deps, "new", new Blob(["x"]), { signal: signal(), lineUpScanId: lineUp });
       await tick();
-      api.next("match").resolve(matchResult([["s1", verdict]]));
-      await tick();
-      api.next("compare").resolve({ result: cmpResult("still_present") });
+      if (lineUp) api.next("compare").resolve({ result: cmpResult("still_present", sameLocation) });
+      else api.next("match").resolve(matchResult([["s1", sameLocation]]));
       api.next("analyze").resolve({ analysis: analysis([finding]), model: "g" });
       await p;
-      assert.ok(!api.log.includes("match(dedupe)"), `${verdict}/${finding.barrierType}`);
+      assert.ok(!api.log.includes("match(dedupe)"), `${lineUp ?? "new area"}/${sameLocation}/${finding.barrierType}`);
     }
   });
 });
 
 describe("scan pipeline: cancellation and unusable photos", () => {
-  it("a failed analysis aborts the in-flight match and comparisons", async () => {
-    const api = fakeApi(session());
-    const p = runScanPipeline(api.deps, "new", new Blob(["x"]), { signal: signal() });
+  it("a failed analysis aborts the in-flight comparisons (re-check) and match (new area)", async () => {
+    const fresh = fakeApi(session());
+    const q = runScanPipeline(fresh.deps, "new", new Blob(["x"]), { signal: signal() });
     await tick();
-    api.next("match").resolve(matchResult([["s1", "yes"]]));
+    const match = fresh.next("match");
+    fresh.next("analyze").reject(new Error("AI_UNAVAILABLE"));
+    await assert.rejects(q, /AI_UNAVAILABLE/);
+    assert.equal(match.signal.aborted, true);
+
+    const api = fakeApi(session());
+    const p = runScanPipeline(api.deps, "new", new Blob(["x"]), { signal: signal(), lineUpScanId: "s1" });
     await tick();
     const cmp = api.next("compare");
     api.next("analyze").reject(new Error("AI_UNAVAILABLE"));
@@ -219,9 +221,7 @@ describe("scan pipeline: cancellation and unusable photos", () => {
 
   it("an unusable photo discards revisit results (no conclusions from a dark/blurry photo)", async () => {
     const api = fakeApi(session());
-    const p = runScanPipeline(api.deps, "new", new Blob(["x"]), { signal: signal() });
-    await tick();
-    api.next("match").resolve(matchResult([["s1", "yes"]]));
+    const p = runScanPipeline(api.deps, "new", new Blob(["x"]), { signal: signal(), lineUpScanId: "s1" });
     await tick();
     api.next("compare").resolve({ result: cmpResult("improved") });
     api.next("analyze").resolve({ analysis: analysis([], false), model: "g" });

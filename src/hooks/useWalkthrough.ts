@@ -9,7 +9,10 @@ import { deleteInspectionPhotos, loadInspectionPhotos, photoStorageMessage, save
 import type { Session } from "@/lib/session/types";
 
 /**
- * Orchestrates a walkthrough: scan → analyze → (match earlier areas) → (compare open findings) → integrate.
+ * Orchestrates an inspection. Two explicit operations:
+ *  - Scan new area: scanFile(file) → analyze (+ scene match, only to SUGGEST a re-check) → integrate.
+ *  - Re-check this area: scanFile(file, { lineUpScanId }) → analyze + compare that photo's open findings.
+ *  Accepting a "looks like Area N" suggestion runs the comparison via confirmRevisit().
  *
  * - Scans are processed one at a time in the order taken, so each one sees the previous results.
  *   The user can pick the next photo at any time; it simply waits in the queue.
@@ -277,6 +280,7 @@ export function useWalkthrough() {
             comparisons: result.comparisons,
             newFindingIds: result.analysis.findings.map(() => newId("f")),
             lineUpScanId: result.lineUpScanId,
+            intent: result.intent,
           },
           Date.now(),
         );

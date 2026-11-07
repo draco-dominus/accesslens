@@ -15,10 +15,10 @@ import { GlassIconButton } from "../ui/primitives";
 
 /**
  * AccessLens app shell, adapted from the Figma prototype's App.tsx.
- * Journey: Home → Camera → Analyzing → Inspect (photo + findings) → Finding details → Re-check → Before/after
- * → Review → Report. Ask Lumi is its own destination. All data comes from useWalkthrough (real API calls +
+ * Journey: Home → Scan new area → Analyzing → Area (photo + findings) → Finding details → Re-check this area
+ * → Before/after → Review → Report. "Scan new area" and "Re-check this area" are separate, explicit
+ * operations. Ask Lumi is its own destination. All data comes from useWalkthrough (real API calls +
  * session engine); nothing here is mocked.
- * All data comes from useWalkthrough (real API calls + session engine); nothing here is mocked.
  */
 
 export type Theme = "light" | "dark";
@@ -57,10 +57,9 @@ export function AccessLensApp() {
   const [screen, setScreen] = useState<Screen>("welcome");
   const [returnTo, setReturnTo] = useState<Screen>("welcome");
   const [scanId, setScanId] = useState<string | null>(null);
-  const [freshScanId, setFreshScanId] = useState<string | null>(null);
   const [findingId, setFindingId] = useState<string | null>(null);
-  const [focusArrival, setFocusArrival] = useState(false);
-  const [lineUpTarget, setLineUpTarget] = useState<string | undefined>();
+  /** Set only by "Re-check this area": the earlier scan the camera lines up with. */
+  const [recheckScanId, setRecheckScanId] = useState<string | undefined>();
   const [lumiFindingId, setLumiFindingId] = useState<string | null>(null);
   const [askReturn, setAskReturn] = useState<Screen>("welcome");
   const [reportReturn, setReportReturn] = useState<Screen>("welcome");
@@ -80,9 +79,9 @@ export function AccessLensApp() {
   const go = useCallback((s: Screen) => withTransition(() => setScreen(s)), []);
   const toggleTheme = () => setOverride(theme === "dark" ? "light" : "dark");
 
-  /** Open the camera. `lineUp`: pre-select an earlier scan to line up with (re-checking a finding). */
-  const startScan = (lineUp?: string) => {
-    setLineUpTarget(typeof lineUp === "string" ? lineUp : undefined);
+  /** Open the camera: a new area by default, or a re-check lined up with `recheck`'s photo. */
+  const startScan = (recheck?: string) => {
+    setRecheckScanId(typeof recheck === "string" ? recheck : undefined);
     if (!session) wt.start();
     else if (session.finishedAt !== null) wt.resume();
     setReturnTo(screen === "scan" ? returnTo : screen);
@@ -92,18 +91,13 @@ export function AccessLensApp() {
   const onCaptured = (file: File, lineUpScanId?: string) => {
     const id = wt.scanFile(file, { lineUpScanId });
     setScanId(id);
-    setFreshScanId(id);
     setFindingId(null);
-    setFocusArrival(false);
     go("discover");
   };
 
-  /** Inspect a scan's photo, optionally with one finding selected; `focus` gives the photo the room. */
-  const openScan = (id: string, finding?: string, focus = false) => {
+  /** An area's photo and findings. */
+  const openScan = (id: string) => {
     setScanId(id);
-    setFreshScanId(null);
-    setFindingId(finding ?? null);
-    setFocusArrival(focus && Boolean(finding));
     go("discover");
   };
 
@@ -116,9 +110,9 @@ export function AccessLensApp() {
     go("finding");
   };
 
-  /** Back from details: that scan's photo, the finding's reference selected, the photo given the room. */
-  const backToPhoto = () => {
-    if (detail) openScan(detail.scanId, detail.findingId, true);
+  /** Back from details: the area page it was opened from. */
+  const backToArea = () => {
+    if (detail) openScan(detail.scanId);
     else go("discover");
   };
 
@@ -137,7 +131,7 @@ export function AccessLensApp() {
   const detailFinding = detail ? session?.findings.find((f) => f.id === detail.findingId) : undefined;
 
   // Camera-led screens are always dark; others follow the chosen appearance.
-  const chromeTheme: Theme = screen === "scan" || screen === "discover" ? "dark" : theme;
+  const chromeTheme: Theme = screen === "scan" ? "dark" : theme;
 
   return (
     <main className="grid min-h-dvh place-items-center bg-[#e8e8ea] transition-colors duration-500 dark:bg-[#050505] sm:p-6">
@@ -158,22 +152,19 @@ export function AccessLensApp() {
               onReport={() => openReport()}
             />
           )}
-          {screen === "scan" && <ScanScreen wt={wt} onCapture={onCaptured} initialLineUpScanId={lineUpTarget} />}
+          {screen === "scan" && <ScanScreen key={recheckScanId ?? "new"} wt={wt} onCapture={onCaptured} recheckScanId={recheckScanId} />}
           {screen === "discover" && currentScan && (
             <DiscoverScreen
               key={currentScan.id}
               wt={wt}
               scan={currentScan}
-              fresh={freshScanId === currentScan.id}
-              theme={theme}
-              selectedFindingId={findingId}
-              focusOnArrival={focusArrival}
-              onSelectFinding={setFindingId}
               onOpenFinding={(id, section) => openFinding(id, currentScan.id, section)}
               onOpenScan={openScan}
-              onScanAgain={() => startScan()}
+              onScanNewArea={() => startScan()}
               onRecheck={(id) => startScan(id)}
-              onOpenWalkthrough={() => go("walkthrough")}
+              onReview={() => go("walkthrough")}
+              onAsk={(id) => openLumi(id)}
+              onHome={() => go("welcome")}
             />
           )}
           {screen === "finding" && detail && detailFinding && (
@@ -183,8 +174,7 @@ export function AccessLensApp() {
               finding={detailFinding}
               scanId={detail.scanId}
               section={detail.section}
-              onBack={backToPhoto}
-              onShowInPhoto={backToPhoto}
+              onBack={backToArea}
               onAsk={() => openLumi(detailFinding.id)}
               onRecheck={isRecheckable(wt, detailFinding) ? () => startScan(detailFinding.lastSeenScanId) : undefined}
             />
@@ -204,7 +194,7 @@ export function AccessLensApp() {
               wt={wt}
               theme={theme}
               onToggleTheme={toggleTheme}
-              onScan={startScan}
+              onScan={() => startScan()}
               onOpenScan={(id, finding) => (finding ? openFinding(finding, id) : openScan(id))}
               onReport={() => openReport()}
               onRestart={() => {
@@ -241,7 +231,7 @@ export function AccessLensApp() {
           </span>
         </div>
 
-        {screen !== "welcome" && screen !== "finding" && screen !== "ask" && screen !== "report" && (
+        {(screen === "scan" || screen === "walkthrough") && (
           <nav
             data-theme={chromeTheme}
             aria-label="AccessLens"
@@ -281,7 +271,6 @@ export function AccessLensApp() {
                     aria-current={active ? "page" : undefined}
                     aria-label={label}
                     onClick={() => {
-                      if (id === "discover") setFreshScanId(null);
                       go(id);
                     }}
                     className={`pressable flex size-11 items-center justify-center rounded-full transition-[background-color,color] duration-300 ease-[var(--ease-ios)] disabled:opacity-30 ${active ? "bg-primary text-on-primary" : "text-fg hover:bg-[color-mix(in_srgb,var(--fg)_8%,transparent)]"}`}
@@ -321,11 +310,11 @@ export function AccessLensApp() {
               <button
                 type="button"
                 onClick={() => startScan()}
-                aria-label={hasScans ? "Scan again" : "Scan"}
+                aria-label={hasScans ? "Scan new area" : "Scan"}
                 className="pressable flex h-12 shrink-0 items-center gap-2 rounded-full bg-primary pr-4 pl-3.5 text-[15px] font-semibold text-on-primary shadow-[0_8px_24px_-8px_rgba(0,0,0,0.5)]"
               >
                 <Scan size={19} />
-                <span className="@max-[374px]:hidden">{hasScans ? "Scan again" : "Scan"}</span>
+                <span className="@max-[374px]:hidden">{hasScans ? "New area" : "Scan"}</span>
               </button>
             ) : (
               <span className="size-11" aria-hidden />

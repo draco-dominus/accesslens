@@ -1,6 +1,7 @@
 import type { FindingStatus, Scan, ScanEvent, Session, TrackedFinding } from "./types";
 import { isOpen } from "./types";
 import { firstSentence } from "../text";
+import { areas } from "./areas";
 
 /**
  * Lumi's words, generated only from real session data. No findings are invented here: every
@@ -96,8 +97,8 @@ export function lumiMessagesForScan(s: Session, scanId: string): string[] {
   const doneScans = s.scans.filter((sc) => sc.step === "done").length;
   if (doneScans > 1 && scan.step === "done") {
     messages.push(
-      s.areaCount > 1
-        ? `We've looked at ${plural(s.areaCount, "area", "areas")} so far.`
+      areas(s).length > 1
+        ? `We've looked at ${plural(areas(s).length, "area", "areas")} so far.`
         : `We've scanned this area ${count(doneScans)} times so far.`,
     );
   }
@@ -124,7 +125,7 @@ export function walkthroughSummary(s: Session): WalkthroughSummary {
     lines.push("We haven't completed any scans yet.");
   } else {
     lines.push(
-      `We completed ${plural(done.length, "scan", "scans")} across ${plural(s.areaCount, "area", "areas")} and noted ${plural(s.findings.length, "potential barrier", "potential barriers")}.`,
+      `We completed ${plural(done.length, "scan", "scans")} across ${plural(areas(s).length, "area", "areas")} and noted ${plural(s.findings.length, "potential barrier", "potential barriers")}.`,
     );
     if (improved.length) lines.push(`${cap(plural(improved.length, "concern appears", "concerns appear"))} improved: ${improved.map(findingName).join("; ")}.`);
     if (unresolved.length) lines.push(`${cap(plural(unresolved.length, "concern is", "concerns are"))} still open: ${unresolved.map(findingName).join("; ")}.`);
@@ -132,7 +133,7 @@ export function walkthroughSummary(s: Session): WalkthroughSummary {
     if (s.findings.length === 0) lines.push("I didn't spot any of the barriers I look for, but photos can't show everything.");
   }
   lines.push("This walkthrough flags potential barriers from photos. It isn't a compliance assessment, and it can't confirm that a space is accessible.");
-  return { scans: done.length, areas: s.areaCount, improved, unresolved, needsVerification, lines };
+  return { scans: done.length, areas: areas(s).length, improved, unresolved, needsVerification, lines };
 }
 
 const cap = (t: string) => t[0].toUpperCase() + t.slice(1);
@@ -243,8 +244,8 @@ export function progressLine(s: Session): string {
   const done = s.scans.filter((sc) => sc.step === "done").length;
   const open = s.findings.filter((f) => isOpen(f.status)).length;
   if (done === 0) return "Let's start exploring together.";
-  const areas = `We've looked at ${plural(s.areaCount, "area", "areas")} so far`;
-  return open ? `${areas}, with ${plural(open, "concern", "concerns")} still open.` : `${areas}.`;
+  const looked = `We've looked at ${plural(areas(s).length, "area", "areas")} so far`;
+  return open ? `${looked}, with ${plural(open, "concern", "concerns")} still open.` : `${looked}.`;
 }
 
 /**
@@ -329,7 +330,7 @@ export function answerQuestion(s: Session, f: TrackedFinding, q: LumiQuestionId)
     case "changed": {
       if (f.history.length < 2) {
         return {
-          text: `I’ve only seen this in scan ${scanNumber(s, f.firstScanId)} so far. Take another photo from the same spot and I’ll compare the two.`,
+          text: `I’ve only seen this in scan ${scanNumber(s, f.firstScanId)} so far. Use Re-check this area from the same spot and I’ll compare the two photos.`,
           source: "From your scan history",
         };
       }

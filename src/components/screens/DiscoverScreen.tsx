@@ -1,338 +1,317 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { retryKey, type useWalkthrough } from "@/hooks/useWalkthrough";
-import { findingsForScan, findingCaptionForScan, lineUpSuggestion, lumiMessagesForScan, scanActivity, scanMood, STATUS_LABEL } from "@/lib/session/lumi";
-import { isOpen, type Scan, type TrackedFinding } from "@/lib/session/types";
+import { areaOf, recheckTarget } from "@/lib/session/areas";
+import { findingsForScan, scanActivity, STATUS_LABEL } from "@/lib/session/lumi";
+import type { Scan, TrackedFinding } from "@/lib/session/types";
+import { spatialBoxes } from "@/lib/spatial";
 import { comparisonPhotos } from "../discover/FindingParts";
-import { PhotoStage } from "../discover/PhotoStage";
-import { StageChecklist, TimingBreakdown, useTicker } from "../lumi/ScanProgress";
-import { Sidekick, type LumiMood } from "../lumi/Sidekick";
+import { PhotoViewer, ScanPhoto, type PhotoMarker } from "../discover/PhotoStage";
+import { StageChecklist, TimingBreakdown } from "../lumi/ScanProgress";
 import { TrustSheet } from "../trust/TrustPanel";
-import { ChevronDown, ChevronRight, Compare, Info, Layers, Rescan } from "../ui/Icons";
+import { BeforeAfter } from "../ui/BeforeAfter";
+import { Chat, ChevronRight, Compare, Home, Info, Layers, List, Rescan, Scan as ScanIcon } from "../ui/Icons";
 import { BarrierIcon, NeedMarks } from "../ui/Needs";
-import { activeMood, Button } from "../ui/primitives";
-import { Sheet, type Detent } from "../ui/Sheet";
-import { AiBadge, StatusIcon, StatusTag } from "../ui/Tags";
-import type { Theme } from "../app/AccessLensApp";
+import { Button, GlassIconButton } from "../ui/primitives";
+import { AiBadge, StatusTag } from "../ui/Tags";
 
 type Walkthrough = ReturnType<typeof useWalkthrough>;
 
-/** Sheet detents: the photo always keeps the space above the sheet. */
-const HEIGHTS: Record<Detent, string> = {
-  peek: "max(30%, 210px)",
-  half: "52%",
-  full: "calc(100% - var(--safe-top) - 62px)",
-};
-
 /**
- * Inspect: the scanned photo is the centerpiece. Findings are numbered references on the photo and
- * concise one-line rows below; tapping a finding opens its own Finding Details screen. After a re-check,
- * a Before & after entry leads straight to the comparison. No boxes or markers are drawn on the photo:
- * the backend returns no coordinates.
+ * One area's photo and findings, as a plain scrolling page: header, the photo (nothing drawn over it),
+ * a re-check's before/after when there is one, then one list of findings. Tapping a finding opens its
+ * Details page. The two operations stay separate and explicit: "Scan new area" never compares anything;
+ * "Re-check this area" lines up with this area's photo.
  */
 export function DiscoverScreen({
   wt,
   scan,
-  fresh,
-  theme,
-  selectedFindingId,
-  focusOnArrival = false,
-  onSelectFinding,
   onOpenFinding,
   onOpenScan,
-  onScanAgain,
+  onScanNewArea,
   onRecheck,
-  onOpenWalkthrough,
+  onReview,
+  onAsk,
+  onHome,
 }: {
   wt: Walkthrough;
   scan: Scan;
-  fresh: boolean;
-  theme: Theme;
-  selectedFindingId: string | null;
-  /** Arrived via "Show in photo": give the photo the room. */
-  focusOnArrival?: boolean;
-  onSelectFinding: (id: string | null) => void;
-  /** Open Finding Details (optionally at a section, e.g. the before/after comparison). */
   onOpenFinding: (findingId: string, section?: "compare") => void;
-  onOpenScan: (scanId: string, findingId?: string) => void;
-  onScanAgain: () => void;
-  /** Open the camera lined up with an earlier scan, to re-check its findings from the same spot. */
+  onOpenScan: (scanId: string) => void;
+  onScanNewArea: () => void;
+  /** Open the camera lined up with this earlier scan's photo. */
   onRecheck: (scanId: string) => void;
-  onOpenWalkthrough: () => void;
+  onReview: () => void;
+  /** Ask Lumi, about this photo's first finding when there is one. */
+  onAsk: (findingId?: string) => void;
+  onHome: () => void;
 }) {
   const session = wt.session!;
   const processing = scan.step !== "done" && scan.step !== "error";
-  const media = wt.media[scan.id];
-  const photo = media?.imageUrl ?? media?.thumbUrl;
-  const messages = scan.step === "done" ? lumiMessagesForScan(session, scan.id) : [];
+  const checking = Boolean(wt.checking[scan.id]);
+  const photo = wt.media[scan.id]?.imageUrl ?? wt.media[scan.id]?.thumbUrl;
+  const area = areaOf(session, scan.id);
   const items = findingsForScan(session, scan.id);
-  const otherOpen = session.findings.filter((f) => isOpen(f.status) && !items.some((i) => i.finding.id === f.id));
-  const checking = wt.checking[scan.id];
-  const manualOptions = scan.step === "done" && !checking && wt.hasImage(scan.id) ? wt.manualRevisitOptions(scan.id).filter((o) => !scan.pendingRevisit.includes(o.id)) : [];
-  const nudge = lineUpSuggestion(session, scan.id);
-  // Findings compared in THIS scan: their before/after is the headline result of a re-check.
-  const compared = items
-    .map((i) => ({ finding: i.finding, event: i.finding.history.filter((h) => h.scanId === scan.id).at(-1) }))
-    .filter((x): x is { finding: TrackedFinding; event: NonNullable<typeof x.event> } => Boolean(x.event?.comparison));
-
-  const [detent, setDetent] = useState<Detent>(() => (focusOnArrival ? "peek" : selectedFindingId || (!processing && items.length) ? "half" : "peek"));
+  const target = !processing && !checking ? recheckTarget(session, scan.id, wt.hasImage) : null;
+  const isRecheck = Boolean(scan.lineUpScanId);
+  const recheckOf = isRecheck ? session.scans.find((s) => s.id === scan.lineUpScanId) : undefined;
+  const notices = scan.step === "done" ? scan.events.flatMap((e) => (e.kind === "notice" ? [e.message] : [])) : [];
+  const [viewer, setViewer] = useState(false);
   const [trustOpen, setTrustOpen] = useState(false);
-  const tick = useTicker(processing, 1000);
-  // Developer timing breakdown: open the app with ?timing=1 (this screen only renders client-side).
   const [showTiming] = useState(() => typeof window !== "undefined" && new URLSearchParams(window.location.search).has("timing"));
 
-  // Raise the sheet when results arrive for a fresh scan.
-  const doneNow = scan.step === "done";
-  const prevDone = useRef(doneNow);
-  useEffect(() => {
-    if (fresh && doneNow && !prevDone.current) setDetent(items.length ? "half" : "peek");
-    prevDone.current = doneNow;
-  }, [doneNow, fresh, items.length]);
+  // Findings compared in THIS scan: the before/after is the headline result of a re-check.
+  const compared = items
+    .map((i) => ({ finding: i.finding, event: i.finding.history.filter((h) => h.scanId === scan.id && h.comparison).at(-1) }))
+    .filter((x): x is { finding: TrackedFinding; event: NonNullable<typeof x.event> } => Boolean(x.event));
+  const listed = items.filter((i) => !compared.some((c) => c.finding.id === i.finding.id));
+  const markers: PhotoMarker[] = items.flatMap((i) => spatialBoxes(i.finding.details).map((box) => ({ number: i.finding.number, box })));
 
-  /** Select a reference on the photo: the photo gets the room, the caption explains it. */
-  const selectFromPhoto = (id: string | null) => {
-    onSelectFinding(id);
-    if (id) setDetent("peek");
-  };
-
-  const mood: LumiMood = checking || processing ? "thinking" : scanMood(scan);
-  const selected = items.find((i) => i.finding.id === selectedFindingId)?.finding;
-  const activity = scanActivity(scan);
-  const newCount = items.filter((i) => i.role === "new").length;
-  const updatedCount = items.length - newCount;
-  const headline = checking
-    ? "Re-checking the earlier finding…"
-    : processing
-      ? `${activity.title}…`
-      : scan.step === "error"
-        ? "I couldn’t finish this scan."
-        : (messages[0] ?? "Done.");
-
-  const header = (
-    <div className="px-5 pb-3" aria-live="polite">
-      <div className="flex items-start gap-3">
-        <Sidekick mood={mood} size={44} halo={activeMood(mood)} />
-        <div className="min-w-0 flex-1 pt-0.5">
-          <p className={`line-clamp-2 text-[16px] leading-snug font-semibold tracking-[-0.015em] ${processing || checking ? "text-thinking" : ""}`}>{headline}</p>
-          {processing ? (
-            <p className="mt-0.5 text-[13px] text-muted tabular-nums">
-              {activity.detail ? `${activity.detail} · ` : ""}
-              {Math.max(0, Math.round((tick - scan.createdAt) / 1000))}s · you can keep scanning
-            </p>
-          ) : scan.step === "done" && selected ? null : scan.step === "done" ? (
-            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
-              <span className="text-[13px] whitespace-nowrap text-muted">
-                Scan {scan.number} · {newCount ? `${newCount} new` : "nothing new"}
-                {updatedCount ? ` · ${updatedCount} re\u2011checked` : ""}
-              </span>
-              <AiBadge />
-            </div>
-          ) : null}
-        </div>
-      </div>
-      {/* The selected reference, named here — below the photo, never on it. */}
-      {selected && scan.step === "done" && (
-        <div key={selected.id} className="animate-rise-in mt-3 flex items-center gap-2.5 rounded-[18px] bg-surface-2 py-1.5 pr-1.5 pl-2.5" aria-live="polite">
-          <span className="grid size-8 shrink-0 place-items-center rounded-full bg-primary text-[14px] font-bold text-on-primary">{selected.number}</span>
-          <span className="min-w-0 flex-1 truncate text-[15px] font-semibold">{selected.details.title}</span>
-          <button
-            type="button"
-            onClick={() => onOpenFinding(selected.id)}
-            className="pressable flex min-h-10 shrink-0 items-center gap-0.5 rounded-full bg-primary px-3.5 text-[14px] font-semibold text-on-primary"
-          >
-            Details <ChevronRight size={16} />
-          </button>
-        </div>
-      )}
-    </div>
-  );
+  const alt = `Area ${area?.number ?? "?"}, scan ${scan.number}${scan.analysis ? `: ${scan.analysis.sceneSummary}` : ""}`;
+  const emptyText = wt.photoRestore === "loading" ? "Restoring this photo from your device…" : wt.restored ? "This photo couldn’t be restored. The findings are still here." : "Preparing photo…";
 
   return (
-    <div data-theme="dark" className="relative h-full overflow-hidden bg-black text-fg">
-      <PhotoStage
-        photo={photo}
-        alt={`Scan ${scan.number}${scan.analysis ? `: ${scan.analysis.sceneSummary}` : ""}`}
-        emptyText={wt.photoRestore === "loading" ? "Restoring this photo from your device…" : wt.restored ? "This photo could not be restored. The finding notes are still available." : "Preparing photo…"}
-        processing={processing || Boolean(checking)}
-        findings={items.map((i) => i.finding)}
-        selectedId={selectedFindingId}
-        onSelect={selectFromPhoto}
-        compact={detent === "full"}
-        bottom={HEIGHTS[detent]}
-      />
+    <div className="relative h-full bg-bg text-fg">
+      <div className="no-scrollbar h-full overflow-y-auto overscroll-contain pb-[calc(var(--safe-bottom)+96px)]">
+        <header className="sticky top-0 z-10 flex items-center gap-2 bg-[linear-gradient(to_bottom,var(--bg)_72%,transparent)] px-4 pt-[calc(var(--safe-top)+4px)] pb-3">
+          <GlassIconButton onClick={onHome} aria-label="Home">
+            <Home size={19} />
+          </GlassIconButton>
+          <div className="min-w-0 flex-1 px-1">
+            <h1 className="text-[20px] leading-tight font-semibold tracking-[-0.02em]">Area {area?.number ?? "?"}</h1>
+            <p className="text-[13px] leading-tight text-muted">
+              {isRecheck ? `Re-check · scan ${scan.number}` : `Scan ${scan.number}`}
+            </p>
+          </div>
+          <GlassIconButton onClick={() => onAsk(items[0]?.finding.id)} aria-label="Ask Lumi">
+            <Chat size={19} />
+          </GlassIconButton>
+          <GlassIconButton onClick={onReview} aria-label="Review all areas">
+            <List size={19} />
+          </GlassIconButton>
+        </header>
 
-      <div data-theme={theme} className="pointer-events-none absolute inset-0 z-20 text-fg [&>*]:pointer-events-auto">
-        <Sheet detent={detent} onDetentChange={setDetent} heights={HEIGHTS} label={`Scan ${scan.number} results`} header={header}>
-          <div className="pb-10">
-            <div className="px-5">
-              {processing && <StageChecklist scan={scan} />}
+        {/* A finished re-check leads with its before/after; otherwise the photo leads. */}
+        {scan.step === "done" && compared.length > 0 ? (
+          <RecheckResult wt={wt} compared={compared} onOpenFinding={onOpenFinding} />
+        ) : (
+          <div className="px-4">
+            <ScanPhoto photo={photo} alt={alt} emptyText={emptyText} processing={processing || checking} markers={markers} maxHeight="52cqh" onOpen={photo ? () => setViewer(true) : undefined} />
+          </div>
+        )}
 
-              {scan.step === "error" && (
-                <div className="pl-[56px]">
-                  <p className="text-[14px] leading-snug text-muted">{scan.error}</p>
-                  <StageChecklist scan={scan} />
-                  {!wt.canRetry(scan.id) && <p className="mt-2 text-[13px] leading-snug text-muted">Trying again won’t help with this photo. Please take a new one.</p>}
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {wt.canRetry(scan.id) && (
-                      <Button size="md" onClick={() => wt.retryScan(scan.id)} icon={<Rescan size={17} />}>
-                        Try again
-                      </Button>
-                    )}
-                    <Button size="md" variant="secondary" onClick={onScanAgain}>
-                      Scan again
-                    </Button>
-                  </div>
-                </div>
-              )}
+        {/* Status while working, or what went wrong. */}
+        {(processing || checking) && (
+          <section className="mx-4 mt-4 rounded-[22px] bg-surface px-4 py-3.5 shadow-[var(--shadow-soft)]" aria-live="polite">
+            <p className="text-[16px] font-semibold text-thinking">
+              {checking ? `Comparing with the earlier photo…` : `${scanActivity(scan).title}…`}
+            </p>
+            {processing && <StageChecklist scan={scan} />}
+            <p className="mt-2 text-[13px] text-muted">You can scan another area meanwhile.</p>
+          </section>
+        )}
+        {scan.step === "error" && (
+          <section className="mx-4 mt-4 rounded-[22px] bg-surface px-4 py-3.5 shadow-[var(--shadow-soft)]" role="alert">
+            <p className="text-[16px] font-semibold">I couldn’t finish this scan.</p>
+            <p className="mt-1 text-[14px] leading-snug text-muted">{scan.error}</p>
+            <StageChecklist scan={scan} />
+            {!wt.canRetry(scan.id) && <p className="mt-2 text-[13px] leading-snug text-muted">Trying again won’t help with this photo. Please take a new one.</p>}
+            {wt.canRetry(scan.id) && (
+              <Button size="md" className="mt-3" onClick={() => wt.retryScan(scan.id)} icon={<Rescan size={17} />}>
+                Try again
+              </Button>
+            )}
+          </section>
+        )}
 
+        {scan.step === "done" && notices.length > 0 && (
+          <div className="mx-4 mt-4 space-y-1.5 rounded-[20px] bg-surface-2 px-4 py-3 text-[14px] leading-snug" aria-live="polite">
+            {notices.map((n) => (
+              <p key={n}>{n}</p>
+            ))}
+          </div>
+        )}
+        {isRecheck && recheckOf && scan.step === "done" && compared.length === 0 && notices.length === 0 && (
+          <p className="mx-5 mt-4 text-[14px] leading-snug text-muted">Nothing open was left to compare with scan {recheckOf.number}.</p>
+        )}
+
+        {/* "Looks like Area N": a suggestion the user may take or dismiss. Never automatic. */}
+        {scan.step === "done" &&
+          scan.pendingRevisit.map((earlierId) => (
+            <RevisitSuggestion key={earlierId} wt={wt} scanId={scan.id} earlierId={earlierId} busy={checking} onOpenScan={onOpenScan} />
+          ))}
+
+        {scan.step === "done" &&
+          (scan.failedComparisons ?? []).map((f) => (
+            <FailedComparisonCard key={`${f.findingId}|${f.referenceScanId}`} wt={wt} scanId={scan.id} findingId={f.findingId} referenceScanId={f.referenceScanId} />
+          ))}
+
+        {/* Findings */}
+        {scan.step === "done" && (
+          <section className="mt-6 px-4" aria-labelledby="findings-heading">
+            <div className="mb-2.5 flex items-center gap-2 px-1">
+              <h2 id="findings-heading" className="text-[17px] font-semibold tracking-[-0.015em]">
+                {compared.length ? "Also in this photo" : "Findings"}
+              </h2>
+              <span className="text-[15px] text-muted tabular-nums">{listed.length}</span>
+              <span className="flex-1" />
+              {listed.length > 0 && <AiBadge />}
             </div>
-
-            {/* Re-check result first: the before/after is one tap away. */}
-            {scan.step === "done" &&
-              compared.map(({ finding, event }) => (
-                <BeforeAfterEntry key={finding.id} wt={wt} finding={finding} event={event} onOpen={() => onOpenFinding(finding.id, "compare")} />
-              ))}
-
-            {items.length > 0 && (
-              <ul className="mt-3 space-y-2 px-4" aria-label="Findings in this scan">
-                {items.map(({ finding }) => (
-                  <li key={finding.id}>
-                    <FindingRow
-                      finding={finding}
-                      summary={findingCaptionForScan(session, scan.id, finding)?.label.replace(/^#\d+ · /, "") ?? finding.details.locationInImage}
-                      selected={selectedFindingId === finding.id}
-                      onOpen={() => onOpenFinding(finding.id)}
-                    />
+            {listed.length > 0 ? (
+              <ul className="overflow-hidden rounded-[22px] bg-surface shadow-[var(--shadow-soft)]" aria-label="Findings in this photo">
+                {listed.map(({ finding }) => (
+                  <li key={finding.id} className="border-b border-line last:border-b-0">
+                    <FindingRow finding={finding} onOpen={() => onOpenFinding(finding.id)} />
                   </li>
                 ))}
               </ul>
+            ) : (
+              <p className="rounded-[20px] bg-surface-2 px-4 py-3.5 text-[15px] leading-snug">
+                {scan.analysis && !scan.analysis.imageUsable
+                  ? `I couldn’t assess this photo: ${scan.analysis.limitations}`
+                  : compared.length
+                    ? "No other potential barriers spotted."
+                    : "No potential barriers spotted in this photo."}
+              </p>
             )}
+          </section>
+        )}
 
-            <div className="px-5">
-              {scan.step === "done" && nudge && wt.hasImage(scan.id) && (
-                <div className="mt-3 flex items-center gap-3 rounded-[20px] bg-surface-2 px-3.5 py-3">
-                  <Layers size={20} className="shrink-0 text-muted" />
-                  <p className="min-w-0 flex-1 text-[14px] leading-snug" title={nudge.text}>
-                    Moved or fixed it? Re-check from this spot.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => onRecheck(scan.id)}
-                    className="pressable min-h-11 shrink-0 rounded-full bg-primary px-4 text-[14px] font-semibold text-on-primary"
-                  >
-                    Re-check
-                  </button>
-                </div>
-              )}
+        {showTiming && <TimingBreakdown scan={scan} />}
 
-              {scan.pendingRevisit.map((earlierId) => (
-                <RevisitQuestion key={earlierId} wt={wt} scanId={scan.id} earlierId={earlierId} busy={Boolean(checking)} onOpenScan={onOpenScan} />
-              ))}
-            </div>
-
-            {scan.step === "done" &&
-              (scan.failedComparisons ?? []).map((f) => (
-                <FailedComparisonCard key={`${f.findingId}|${f.referenceScanId}`} wt={wt} scanId={scan.id} findingId={f.findingId} referenceScanId={f.referenceScanId} />
-              ))}
-
-            {manualOptions.length > 0 && <ManualRevisit wt={wt} scanId={scan.id} options={manualOptions} />}
-
-            {showTiming && <TimingBreakdown scan={scan} />}
-
-            {scan.step === "done" && otherOpen.length > 0 && (
-              <button
-                type="button"
-                onClick={onOpenWalkthrough}
-                className="pressable mx-4 mt-3 flex min-h-14 w-[calc(100%-2rem)] items-center gap-3 rounded-[20px] bg-surface px-4 text-left shadow-[var(--shadow-soft)]"
-              >
-                <span className="min-w-0 flex-1 text-[15px] leading-snug">
-                  <span className="font-semibold">
-                    {otherOpen.length} {otherOpen.length === 1 ? "concern" : "concerns"} still open
-                  </span>
-                  <span className="text-muted"> from earlier scans</span>
-                </span>
-                <ChevronRight size={18} className="shrink-0 text-muted" />
-              </button>
-            )}
-
-            {scan.step === "done" && (
-              <div className="mt-5 px-4">
-                <Button onClick={onScanAgain} icon={<Rescan size={19} />} className="w-full">
-                  Scan again
-                </Button>
-              </div>
-            )}
-
-            <div className="px-7 pt-5 text-center">
-              {scan.analysis && !scan.analysis.imageUsable && <p className="text-[13px] leading-relaxed text-muted">{scan.analysis.limitations}</p>}
-              {wt.photoStorageWarning && <p className="mb-2 rounded-2xl bg-surface-2 px-3 py-2 text-[12px] leading-snug text-muted">{wt.photoStorageWarning}</p>}
-              <button
-                type="button"
-                onClick={() => setTrustOpen(true)}
-                className="pressable mt-1 inline-flex min-h-11 items-center gap-1.5 rounded-full px-3 text-[13px] font-semibold text-muted underline-offset-2 hover:underline"
-              >
-                <Info size={15} /> About these results
-              </button>
-            </div>
-          </div>
-        </Sheet>
+        <div className="px-7 pt-5 text-center">
+          {wt.photoStorageWarning && <p className="mb-2 rounded-2xl bg-surface-2 px-3 py-2 text-[12px] leading-snug text-muted">{wt.photoStorageWarning}</p>}
+          <button type="button" onClick={() => setTrustOpen(true)} className="pressable inline-flex min-h-11 items-center gap-1.5 rounded-full px-3 text-[13px] font-semibold text-muted">
+            <Info size={15} /> About these results
+          </button>
+        </div>
       </div>
 
-      <div data-theme={theme}>
-        <TrustSheet open={trustOpen} onClose={() => setTrustOpen(false)} />
+      {/* The two explicit operations. */}
+      <div className="absolute inset-x-0 bottom-0 z-20 flex gap-2 border-t border-glass-line bg-glass-strong px-4 pt-3 pb-[calc(var(--safe-bottom)+10px)] backdrop-blur-2xl">
+        <Button size="md" className="h-12 min-w-0 flex-1 px-3 whitespace-nowrap" icon={<ScanIcon size={18} />} onClick={onScanNewArea}>
+          Scan new area
+        </Button>
+        {target && (
+          <Button size="md" variant="secondary" className="h-12 min-w-0 flex-1 px-3 whitespace-nowrap" icon={<Layers size={17} />} onClick={() => onRecheck(target)}>
+            Re-check area
+          </Button>
+        )}
       </div>
+
+      {viewer && photo && <PhotoViewer photo={photo} alt={alt} markers={markers} onClose={() => setViewer(false)} />}
+      <TrustSheet open={trustOpen} onClose={() => setTrustOpen(false)} />
     </div>
   );
 }
 
-/** One line per finding: number, title, need icons, status icon. Tap → Finding Details. */
-function FindingRow({ finding, summary, selected, onOpen }: { finding: TrackedFinding; summary: string; selected: boolean; onOpen: () => void }) {
+/** Number, full title (wraps, never truncated), need icons, status. Tap → Details. */
+function FindingRow({ finding, onOpen }: { finding: TrackedFinding; onOpen: () => void }) {
   return (
     <button
       type="button"
       onClick={onOpen}
-      aria-label={`Finding ${finding.number}: ${finding.details.title}. ${STATUS_LABEL[finding.status]}. ${summary}. Open details`}
-      className={`pressable flex min-h-14 w-full items-center gap-3 rounded-[20px] bg-surface px-3 text-left shadow-[var(--shadow-soft)] ${selected ? "ring-2 ring-fg" : ""}`}
+      aria-label={`Finding ${finding.number}: ${finding.details.title}. ${STATUS_LABEL[finding.status]}. Open details`}
+      className="pressable flex min-h-16 w-full items-center gap-3 px-4 py-3 text-left"
     >
-      <span className={`grid size-8 shrink-0 place-items-center rounded-full text-[14px] font-bold ${selected ? "bg-primary text-on-primary" : "bg-surface-2"}`}>{finding.number}</span>
-      <BarrierIcon type={finding.details.barrierType} size={17} className="shrink-0 text-muted" />
-      <span className="min-w-0 flex-1 truncate text-[16px] font-semibold tracking-[-0.01em]">{finding.details.title}</span>
-      <NeedMarks who={finding.details.whoMayBeAffected} />
-      <StatusIcon status={finding.status} />
-      <ChevronRight size={17} className="shrink-0 text-muted" />
-    </button>
-  );
-}
-
-/** The re-check result, surfaced first: two thumbnails and the status, opening the comparison. */
-function BeforeAfterEntry({ wt, finding, event, onOpen }: { wt: Walkthrough; finding: TrackedFinding; event: NonNullable<TrackedFinding["history"][number]>; onOpen: () => void }) {
-  const { beforeScan, nowScan, beforeUrl, nowUrl } = comparisonPhotos(wt, finding, event);
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="pressable animate-rise-in mx-4 mt-3 flex w-[calc(100%-2rem)] items-center gap-3 rounded-[22px] bg-surface p-3 text-left shadow-[var(--shadow-float)]"
-    >
-      <span className="relative flex shrink-0" aria-hidden>
-        {[beforeUrl, nowUrl].map((u, i) => (
-          <span key={i} className={`block size-14 overflow-hidden rounded-[14px] bg-surface-2 ring-2 ring-surface ${i ? "-ml-4" : ""}`}>
-            {/* eslint-disable-next-line @next/next/no-img-element -- local blob URL */}
-            {u && <img src={u} alt="" className="size-full object-cover" />}
-          </span>
-        ))}
-      </span>
+      <span className="grid size-8 shrink-0 place-items-center rounded-full bg-surface-2 text-[14px] font-bold">{finding.number}</span>
       <span className="min-w-0 flex-1">
-        <span className="flex items-center gap-1.5 text-[13px] font-semibold text-muted">
-          <Compare size={15} /> Before & after · scan {beforeScan?.number ?? "?"} → {nowScan?.number ?? "?"}
+        <span className="flex items-start gap-1.5 text-[16px] leading-snug font-semibold tracking-[-0.01em]">
+          <BarrierIcon type={finding.details.barrierType} size={17} className="mt-0.5 shrink-0 text-muted" />
+          <span>{finding.details.title}</span>
         </span>
-        <span className="mt-0.5 block truncate text-[16px] font-semibold">#{finding.number} {finding.details.title}</span>
-        <span className="mt-1 block">
-          <StatusTag status={event.status} />
+        <span className="mt-1.5 flex flex-wrap items-center gap-1.5">
+          <StatusTag status={finding.status} />
+          <NeedMarks who={finding.details.whoMayBeAffected} />
         </span>
       </span>
       <ChevronRight size={18} className="shrink-0 text-muted" />
     </button>
+  );
+}
+
+/** Re-check result: the comparison photos, large, and each compared finding's new status. */
+function RecheckResult({
+  wt,
+  compared,
+  onOpenFinding,
+}: {
+  wt: Walkthrough;
+  compared: { finding: TrackedFinding; event: TrackedFinding["history"][number] }[];
+  onOpenFinding: (id: string, section?: "compare") => void;
+}) {
+  const { beforeScan, nowScan, beforeUrl, nowUrl } = comparisonPhotos(wt, compared[0].finding, compared[0].event);
+  return (
+    <section className="animate-rise-in mx-4 rounded-[26px] bg-surface p-4 shadow-[var(--shadow-float)]" aria-labelledby="recheck-heading">
+      <h2 id="recheck-heading" className="flex items-baseline gap-2 text-[18px] font-semibold tracking-[-0.02em]">
+        <Compare size={19} className="self-center" /> Before & after
+        <span className="text-[13px] font-medium text-muted">
+          scan {beforeScan?.number ?? "?"} → {nowScan?.number ?? "?"}
+        </span>
+      </h2>
+      <ul className="mt-3 space-y-2">
+        {compared.map(({ finding, event }) => (
+          <li key={finding.id}>
+            <button
+              type="button"
+              onClick={() => onOpenFinding(finding.id, "compare")}
+              className="pressable flex min-h-14 w-full items-center gap-3 rounded-[18px] bg-surface-2 px-3.5 py-2.5 text-left"
+              aria-label={`Finding ${finding.number}: ${finding.details.title}. ${STATUS_LABEL[event.status]}. Open the comparison`}
+            >
+              <span className="min-w-0 flex-1">
+                <span className="block text-[15px] leading-snug font-semibold">
+                  #{finding.number} {finding.details.title}
+                </span>
+                <span className="mt-1 block">
+                  <StatusTag status={event.status} />
+                </span>
+              </span>
+              <ChevronRight size={18} className="shrink-0 text-muted" />
+            </button>
+          </li>
+        ))}
+      </ul>
+      {beforeUrl && nowUrl && (
+        <div className="mt-3">
+          <BeforeAfter earlier={beforeUrl} later={nowUrl} earlierLabel={`Scan ${beforeScan?.number}, earlier`} laterLabel={`Scan ${nowScan?.number}, now`} />
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** Non-blocking: the scene looked like an earlier area. Re-check it, or keep it as a new area. */
+function RevisitSuggestion({ wt, scanId, earlierId, busy, onOpenScan }: { wt: Walkthrough; scanId: string; earlierId: string; busy: boolean; onOpenScan: (id: string) => void }) {
+  const session = wt.session!;
+  const earlier = session.scans.find((s) => s.id === earlierId);
+  if (!earlier) return null;
+  const n = areaOf(session, earlierId)?.number ?? earlier.number;
+  const thumb = wt.media[earlierId]?.thumbUrl ?? wt.media[earlierId]?.imageUrl;
+  const canCompare = wt.hasImage(earlierId) && wt.hasImage(scanId);
+  return (
+    <section className="mx-4 mt-4 rounded-[22px] bg-surface p-3.5 shadow-[var(--shadow-soft)]" aria-label={`This may be Area ${n}`}>
+      <div className="flex items-center gap-3">
+        <button type="button" onClick={() => onOpenScan(earlierId)} className="size-14 shrink-0 overflow-hidden rounded-[14px] bg-surface-2" aria-label={`View Area ${n}`}>
+          {/* eslint-disable-next-line @next/next/no-img-element -- local blob URL */}
+          {thumb && <img src={thumb} alt="" className="size-full object-cover" />}
+        </button>
+        <p className="min-w-0 flex-1 text-[15px] leading-snug">
+          <span className="font-semibold">This looks like Area {n}.</span>
+          <span className="text-muted"> Compare the photos, or keep this as a new area.</span>
+        </p>
+      </div>
+      <div className="mt-3 flex gap-2">
+        {canCompare && (
+          <Button size="md" disabled={busy} onClick={() => wt.confirmRevisit(scanId, earlierId)} className="flex-1">
+            Compare
+          </Button>
+        )}
+        <Button size="md" variant="secondary" disabled={busy} onClick={() => wt.declineRevisit(scanId, earlierId)} className="flex-1">
+          It’s new
+        </Button>
+      </div>
+    </section>
   );
 }
 
@@ -347,8 +326,8 @@ function FailedComparisonCard({ wt, scanId, findingId, referenceScanId }: { wt: 
   return (
     <div className="mx-4 mt-3 rounded-[20px] bg-surface px-4 py-3 shadow-[var(--shadow-soft)]" role="group" aria-label={`Comparison for finding ${finding.number} didn't finish`}>
       <p className="text-[15px] leading-snug">
-        <span className="font-semibold">I couldn’t re-check #{finding.number} {finding.details.title}</span>
-        <span className="text-muted"> against scan {earlier.number}. Its status hasn’t changed.</span>
+        <span className="font-semibold">I couldn’t compare #{finding.number} {finding.details.title}</span>
+        <span className="text-muted"> with scan {earlier.number}. Its status hasn’t changed.</span>
       </p>
       <div aria-live="polite">{state?.error && <p className="mt-1 text-[13px] leading-snug text-muted">Still didn’t work: {state.error}</p>}</div>
       {photosAvailable ? (
@@ -356,67 +335,7 @@ function FailedComparisonCard({ wt, scanId, findingId, referenceScanId }: { wt: 
           {state?.busy ? "Comparing…" : "Try comparison again"}
         </Button>
       ) : (
-        <p className="mt-1 text-[13px] leading-snug text-muted">The photos are no longer available. Re-check the spot with Line up instead.</p>
-      )}
-    </div>
-  );
-}
-
-function RevisitQuestion({ wt, scanId, earlierId, busy, onOpenScan }: { wt: Walkthrough; scanId: string; earlierId: string; busy: boolean; onOpenScan: (id: string) => void }) {
-  const earlier = wt.session!.scans.find((s) => s.id === earlierId);
-  if (!earlier) return null;
-  const thumb = wt.media[earlierId]?.thumbUrl ?? wt.media[earlierId]?.imageUrl;
-  return (
-    <div className="mt-3 rounded-[22px] bg-surface p-3.5 shadow-[var(--shadow-soft)]" role="group" aria-label={`Is this the same area as scan ${earlier.number}?`}>
-      <div className="flex items-center gap-3">
-        <button type="button" onClick={() => onOpenScan(earlierId)} className="size-14 shrink-0 overflow-hidden rounded-[14px] bg-surface-2" aria-label={`View scan ${earlier.number}`}>
-          {/* eslint-disable-next-line @next/next/no-img-element -- local blob URL */}
-          {thumb && <img src={thumb} alt="" className="size-full object-cover" />}
-        </button>
-        <p className="min-w-0 flex-1 text-[15px] leading-snug font-semibold">Is this the same spot as scan {earlier.number}?</p>
-      </div>
-      <p className="mt-2 text-[13px] leading-snug text-muted">If yes, I’ll compare the two photos for the open concerns there. I’ll only mark something improved if the photos clearly show it.</p>
-      <div className="mt-3 flex gap-2">
-        <Button size="md" disabled={busy} onClick={() => wt.confirmRevisit(scanId, earlierId)} className="flex-1">
-          Yes, same spot
-        </Button>
-        <Button size="md" variant="secondary" disabled={busy} onClick={() => wt.declineRevisit(scanId, earlierId)} className="flex-1">
-          No, different
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-function ManualRevisit({ wt, scanId, options }: { wt: Walkthrough; scanId: string; options: Scan[] }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="mx-4 mt-3 rounded-[20px] bg-surface shadow-[var(--shadow-soft)]">
-      <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} className="flex min-h-14 w-full items-center gap-3 px-4 text-left">
-        <span className="min-w-0 flex-1 text-[15px] leading-snug font-semibold">Re-checking an earlier spot?</span>
-        <ChevronDown size={18} className={`shrink-0 text-muted transition-transform ${open ? "rotate-180" : ""}`} />
-      </button>
-      {open && (
-        <div className="border-t border-line px-4 pt-2 pb-3">
-          <p className="mb-2 text-[13px] leading-snug text-muted">Pick the scan this photo revisits and I’ll compare its open concerns.</p>
-          <div className="flex flex-wrap gap-2">
-            {options.map((o) => {
-              const thumb = wt.media[o.id]?.thumbUrl ?? wt.media[o.id]?.imageUrl;
-              return (
-                <button
-                  key={o.id}
-                  type="button"
-                  onClick={() => wt.confirmRevisit(scanId, o.id)}
-                  className="pressable flex min-h-11 items-center gap-2 rounded-full border border-line bg-surface-2 py-1 pr-4 pl-1 text-[14px] font-semibold"
-                >
-                  {/* eslint-disable-next-line @next/next/no-img-element -- local blob URL */}
-                  {thumb && <img src={thumb} alt="" className="size-9 rounded-full object-cover" />}
-                  Scan {o.number}
-                </button>
-              );
-            })}
-          </div>
-        </div>
+        <p className="mt-1 text-[13px] leading-snug text-muted">The photos are no longer available. Use Re-check area instead.</p>
       )}
     </div>
   );

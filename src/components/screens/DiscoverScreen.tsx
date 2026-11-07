@@ -2,12 +2,12 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { useWalkthrough } from "@/hooks/useWalkthrough";
-import { findingsForScan, lumiMessagesForScan, scanMood } from "@/lib/session/lumi";
+import { findingsForScan, lineUpSuggestion, lumiMessagesForScan, scanMood } from "@/lib/session/lumi";
 import { isOpen, type FindingEvent, type Scan, type TrackedFinding } from "@/lib/session/types";
 import { activeStageSummary, StageChecklist, TimingBreakdown, useTicker } from "../lumi/ScanProgress";
 import { Sidekick, type LumiMood } from "../lumi/Sidekick";
 import { BeforeAfter } from "../ui/BeforeAfter";
-import { Chat, ChevronDown, ChevronRight, Rescan } from "../ui/Icons";
+import { Chat, ChevronDown, ChevronRight, Layers, Rescan } from "../ui/Icons";
 import { activeMood, BottomSheet, Button, IridescentEdge, SidekickCapsule } from "../ui/primitives";
 import { AiBadge, ConfidenceTag, StatusTag, TypeTag } from "../ui/Tags";
 import type { Theme } from "../app/AccessLensApp";
@@ -32,6 +32,7 @@ export function DiscoverScreen({
   onAsk,
   onOpenScan,
   onScanAgain,
+  onRecheck,
   onOpenWalkthrough,
 }: {
   wt: Walkthrough;
@@ -43,6 +44,8 @@ export function DiscoverScreen({
   onAsk: (findingId: string) => void;
   onOpenScan: (scanId: string, findingId?: string) => void;
   onScanAgain: () => void;
+  /** Open the camera lined up with an earlier scan, to re-check its findings from the same spot. */
+  onRecheck: (scanId: string) => void;
   onOpenWalkthrough: () => void;
 }) {
   const session = wt.session!;
@@ -74,6 +77,7 @@ export function DiscoverScreen({
 
   const mood: LumiMood = checking ? "thinking" : selectedFindingId ? "speaking" : scanMood(scan);
   const pick = (id: string) => onSelectFinding(selectedFindingId === id ? null : id);
+  const nudge = lineUpSuggestion(session, scan.id);
 
   const newCount = items.filter((i) => i.role === "new").length;
   const updatedCount = items.length - newCount;
@@ -138,6 +142,10 @@ export function DiscoverScreen({
                     <>
                       <p className="text-[17px] leading-snug font-semibold tracking-[-0.015em]">I couldn’t finish this scan.</p>
                       <p className="mt-0.5 text-[14px] leading-snug text-muted">{scan.error}</p>
+                      <StageChecklist scan={scan} />
+                      {!wt.canRetry(scan.id) && (
+                        <p className="mt-2 text-[13px] leading-snug text-muted">Trying again won’t help with this photo. Please take a new one.</p>
+                      )}
                       <div className="mt-3 flex flex-wrap gap-2">
                         {wt.canRetry(scan.id) && (
                           <Button size="md" onClick={() => wt.retryScan(scan.id)} icon={<Rescan size={17} />}>
@@ -158,6 +166,18 @@ export function DiscoverScreen({
                           {m}
                         </p>
                       ))}
+                      {nudge && wt.hasImage(scan.id) && (
+                        <div className="mt-3 rounded-2xl bg-surface-2 px-3 py-2.5">
+                          <p className="text-[14px] leading-snug">{nudge.text}</p>
+                          <button
+                            type="button"
+                            onClick={() => onRecheck(scan.id)}
+                            className="pressable mt-2 inline-flex min-h-11 items-center gap-2 rounded-full bg-primary px-4 text-[15px] font-semibold text-on-primary"
+                          >
+                            <Layers size={17} /> Re-check with Line up
+                          </button>
+                        </div>
+                      )}
                     </>
                   )}
                 </div>
@@ -207,6 +227,7 @@ export function DiscoverScreen({
                     open={selectedFindingId === finding.id}
                     onToggle={() => pick(finding.id)}
                     onAsk={() => onAsk(finding.id)}
+                    onRecheck={isOpen(finding.status) && wt.hasImage(finding.lastSeenScanId) ? () => onRecheck(finding.lastSeenScanId) : undefined}
                   />
                 </li>
               ))}
@@ -334,6 +355,7 @@ export function FindingCard({
   open,
   onToggle,
   onAsk,
+  onRecheck,
 }: {
   wt: Walkthrough;
   finding: TrackedFinding;
@@ -342,6 +364,8 @@ export function FindingCard({
   open: boolean;
   onToggle: () => void;
   onAsk: () => void;
+  /** Present when the finding is open and its latest photo is available for Line up. */
+  onRecheck?: () => void;
 }) {
   const d = finding.details;
   const event = finding.history.filter((h) => h.scanId === scanId).at(-1);
@@ -379,9 +403,16 @@ export function FindingCard({
             {event?.comparison && <ComparisonBlock wt={wt} finding={finding} event={event} active={open} />}
             <FindingDetails finding={finding} active={open && !event?.comparison} />
             <History wt={wt} finding={finding} />
-            <Button size="md" icon={<Chat size={17} />} onClick={onAsk} className="mt-5 h-12 w-full">
-              Ask Lumi about this
-            </Button>
+            <div className="mt-5 flex gap-2">
+              <Button size="md" icon={<Chat size={17} />} onClick={onAsk} className="h-12 flex-1">
+                Ask Lumi
+              </Button>
+              {onRecheck && (
+                <Button size="md" variant="secondary" icon={<Layers size={17} />} onClick={onRecheck} className="h-12 flex-1">
+                  Re-check spot
+                </Button>
+              )}
+            </div>
           </div>
         </div>
       </div>

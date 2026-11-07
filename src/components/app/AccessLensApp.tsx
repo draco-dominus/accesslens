@@ -44,6 +44,7 @@ export function AccessLensApp() {
   const [scanId, setScanId] = useState<string | null>(null);
   const [freshScanId, setFreshScanId] = useState<string | null>(null);
   const [findingId, setFindingId] = useState<string | null>(null);
+  const [lineUpTarget, setLineUpTarget] = useState<string | undefined>();
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -59,7 +60,9 @@ export function AccessLensApp() {
   const go = useCallback((s: Screen) => setScreen(s), []);
   const toggleTheme = () => setOverride(theme === "dark" ? "light" : "dark");
 
-  const startScan = () => {
+  /** Open the camera. `lineUp`: pre-select an earlier scan to line up with (re-checking a finding). */
+  const startScan = (lineUp?: string) => {
+    setLineUpTarget(typeof lineUp === "string" ? lineUp : undefined);
     if (!session) wt.start();
     setReturnTo(screen === "scan" ? returnTo : screen);
     go("scan");
@@ -118,7 +121,7 @@ export function AccessLensApp() {
               onContinue={() => go("walkthrough")}
             />
           )}
-          {screen === "scan" && <ScanScreen wt={wt} onCapture={onCaptured} />}
+          {screen === "scan" && <ScanScreen wt={wt} onCapture={onCaptured} initialLineUpScanId={lineUpTarget} />}
           {screen === "discover" && currentScan && (
             <DiscoverScreen
               key={currentScan.id}
@@ -130,7 +133,8 @@ export function AccessLensApp() {
               onSelectFinding={setFindingId}
               onAsk={askAbout}
               onOpenScan={openScan}
-              onScanAgain={startScan}
+              onScanAgain={() => startScan()}
+              onRecheck={(id) => startScan(id)}
               onOpenWalkthrough={() => go("walkthrough")}
             />
           )}
@@ -232,7 +236,7 @@ export function AccessLensApp() {
             {screen !== "scan" ? (
               <button
                 type="button"
-                onClick={startScan}
+                onClick={() => startScan()}
                 aria-label={hasScans ? "Scan again" : "Scan"}
                 className="pressable flex h-12 shrink-0 items-center gap-2 rounded-full bg-primary pr-4 pl-3.5 text-[15px] font-semibold text-on-primary shadow-[0_8px_24px_-8px_rgba(0,0,0,0.5)]"
               >

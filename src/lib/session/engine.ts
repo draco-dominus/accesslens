@@ -1,6 +1,6 @@
 import type { Analysis } from "../analysis-schema";
 import type { CompareSuccess, ComparisonStatus } from "../comparison-schema";
-import { MAX_MATCH_CANDIDATES, type MatchSuccess } from "../match-schema";
+import { MAX_MATCH_CANDIDATES, type MatchSuccess, type SameArea } from "../match-schema";
 import {
   isOpen,
   type FindingStatus,
@@ -141,6 +141,24 @@ type StatusUpdate = {
 };
 
 /** Combine a comparison result and/or a duplicate sighting into one status update. */
+/** Same-place verdicts from successful comparisons against one earlier scan. */
+function comparisonVerdicts(comparisons: CompareOutcome[], earlierScanId: string): SameArea[] {
+  return comparisons.flatMap((c) => (c.referenceScanId === earlierScanId && "result" in c ? [c.result.comparison.sameLocation] : []));
+}
+
+/**
+ * Combine the scene match's verdict with the comparisons' closer, evidence-first verdicts.
+ * No comparison evidence → keep the scene match's verdict (it wasn't contradicted).
+ * Any comparison sees the same place → "yes". All say different → "no". Otherwise the strongest remaining.
+ */
+export function reconcileArea(sceneMatch: SameArea, verdicts: SameArea[]): SameArea {
+  if (!verdicts.length) return sceneMatch;
+  if (verdicts.includes("yes")) return "yes";
+  if (verdicts.every((v) => v === "no")) return "no";
+  if (verdicts.includes("likely")) return "likely";
+  return "unclear";
+}
+
 /** The comparison concluded the two photos don't (clearly) show the same place. */
 function differentPlace(outcome: CompareOutcome | undefined): boolean {
   return Boolean(outcome && "result" in outcome && ["no", "unclear"].includes(outcome.result.comparison.sameLocation));
@@ -278,14 +296,28 @@ export function integrateScan(
       events.push({ kind: "notice", message: `This doesn't look like the same spot as scan ${n}, so I left its findings as they were.` });
     }
   }
+  // Reconcile the quick scene match with the evidence-first comparisons before saying anything about
+  // the location: a comparison looks closely at both photos, so where they disagree it wins.
+  const contradicted: string[] = [];
+  relations.forEach((r, i) => {
+    if (r.decidedBy !== "auto") return;
+    const verdict = reconcileArea(r.sameArea, comparisonVerdicts(input.comparisons, r.scanId));
+    if (verdict !== r.sameArea) {
+      if (verdict === "no") contradicted.push(r.scanId);
+      relations[i] = { ...r, sameArea: verdict, evidence: `${r.evidence} (Updated after comparing the photos closely: ${verdict}.)` };
+    }
+  });
   for (const r of relations) {
     if (r.decidedBy !== "auto") continue;
-    // Only claim a revisit when the scene match was confident, or a "likely" match was backed up by
-    // at least one comparison that also saw the same place.
-    const confirmedByComparison = input.comparisons.some((c) => c.referenceScanId === r.scanId && !differentPlace(c) && "result" in c);
-    if (r.sameArea === "yes" || (r.sameArea === "likely" && confirmedByComparison)) {
+    if (r.sameArea === "yes" || r.sameArea === "likely") {
       events.push({ kind: "revisit", scanId: r.scanId, sameArea: r.sameArea, decidedBy: "auto" });
     }
+  }
+  for (const id of contradicted) {
+    events.push({
+      kind: "notice",
+      message: `At first this looked like scan ${getScan(s, id)!.number}, but a closer comparison found a different spot, so I left its findings as they were.`,
+    });
   }
   const pendingRevisit = input.matchFailed
     ? input.candidateScanIds

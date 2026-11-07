@@ -245,3 +245,24 @@ export function progressLine(s: Session): string {
   const areas = `We've looked at ${plural(s.areaCount, "area", "areas")} so far`;
   return open ? `${areas}, with ${plural(open, "concern", "concerns")} still open.` : `${areas}.`;
 }
+
+/**
+ * Contextual nudge to re-check a spot with Line up, after a scan whose photo is the latest view of at
+ * least one open concern. Returns null when there's nothing to re-check here. Never forces anything:
+ * the UI shows it as an optional action.
+ */
+export function lineUpSuggestion(s: Session, scanId: string): { scanId: string; text: string } | null {
+  const scan = s.scans.find((sc) => sc.id === scanId);
+  if (!scan || scan.step !== "done") return null;
+  const open = s.findings.filter((f) => isOpen(f.status) && f.lastSeenScanId === scanId);
+  if (!open.length) return null;
+  const first = open[0];
+  const name = findingName(first);
+  const text =
+    first.status === "needs_verification"
+      ? `To settle the ${name}, re-check it from the same spot: tap Re-check and line up with this photo.`
+      : open.length > 1
+        ? `Once things here are moved or fixed, tap Re-check and line up with this photo, so I compare from the same spot.`
+        : `Once the ${name} is moved or fixed, tap Re-check and line up with this photo, so I compare from the same spot.`;
+  return { scanId, text };
+}

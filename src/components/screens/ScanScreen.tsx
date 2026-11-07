@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { useWalkthrough } from "@/hooks/useWalkthrough";
+import { fitContain, type Size } from "@/lib/fit";
 import { openFindingsLastSeenIn } from "@/lib/session/engine";
 import { isOpen } from "@/lib/session/types";
 import type { LumiMood } from "../lumi/Sidekick";
@@ -14,18 +15,40 @@ type CamState = "starting" | "live" | "unavailable" | "denied";
 const cameraSupported = () =>
   typeof window !== "undefined" && window.isSecureContext && Boolean(navigator.mediaDevices?.getUserMedia);
 
+/** Until the camera reports its size, assume a typical phone sensor in portrait. */
+const DEFAULT_FRAME: Size = { w: 3, h: 4 };
+
 /**
- * Camera-first scan (adapted from the prototype's Scan screen, with a real camera instead of demo views).
- * Live viewfinder when the browser allows it (HTTPS or localhost); otherwise the native camera / photo
- * picker. Every photo goes through the real pipeline (HEIC conversion → analyze → match → compare).
+ * Camera-first scan (adapted from the prototype's Scan screen).
+ *
+ * What you see is what gets analyzed: the viewfinder is a "capture frame" with the camera stream's exact
+ * aspect ratio, fitted (never cropped or stretched) between Lumi's guidance and the controls. The captured
+ * photo is the full camera frame — the same field of view shown in the frame. The Line-up guide is drawn in
+ * the same frame with the same fit, so aligning to it aligns the actual photo.
+ *
+ * Without a live camera (no HTTPS / permission denied) the native camera or photo picker is used, and
+ * a selected Line-up photo is shown as a reference instead of an overlay.
  */
-export function ScanScreen({ wt, onCapture }: { wt: Walkthrough; onCapture: (file: File, lineUpScanId?: string) => void }) {
+export function ScanScreen({
+  wt,
+  onCapture,
+  initialLineUpScanId,
+}: {
+  wt: Walkthrough;
+  onCapture: (file: File, lineUpScanId?: string) => void;
+  /** Pre-select an earlier scan to line up with (e.g. from "Re-check this spot"). */
+  initialLineUpScanId?: string;
+}) {
   const video = useRef<HTMLVideoElement>(null);
+  const area = useRef<HTMLDivElement>(null);
   const takeInput = useRef<HTMLInputElement>(null);
   const pickInput = useRef<HTMLInputElement>(null);
   const [cam, setCam] = useState<CamState>(() => (cameraSupported() ? "starting" : "unavailable"));
   const [flash, setFlash] = useState(0);
-  const [ghostScanId, setGhostScanId] = useState<string | null>(null);
+  const [ghostScanId, setGhostScanId] = useState<string | null>(initialLineUpScanId ?? null);
+  const [areaSize, setAreaSize] = useState<Size | null>(null);
+  const [videoSize, setVideoSize] = useState<Size | null>(null);
+  const [ghostSize, setGhostSize] = useState<Size | null>(null);
 
   const session = wt.session;
   const busy = session?.scans.find((s) => s.step !== "done" && s.step !== "error");
@@ -36,42 +59,68 @@ export function ScanScreen({ wt, onCapture }: { wt: Walkthrough; onCapture: (fil
     () =>
       (session?.scans ?? [])
         .filter((sc) => sc.step === "done" && openFindingsLastSeenIn(session!, sc.id).length > 0)
-        .map((sc) => ({ scan: sc, url: wt.media[sc.id]?.imageUrl ?? wt.media[sc.id]?.thumbUrl }))
-        .filter((o): o is { scan: typeof o.scan; url: string } => Boolean(o.url))
+        .map((sc) => ({
+          scan: sc,
+          url: wt.media[sc.id]?.imageUrl ?? wt.media[sc.id]?.thumbUrl,
+          findings: openFindingsLastSeenIn(session!, sc.id),
+        }))
+        .filter((o): o is typeof o & { url: string } => Boolean(o.url))
         .reverse(),
     [session, wt.media],
   );
   const ghost = ghostOptions.find((o) => o.scan.id === ghostScanId);
 
+  // Space available for the capture frame (between the guidance capsule and the controls).
+  useEffect(() => {
+    const el = area.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([entry]) => setAreaSize({ w: entry.contentRect.width, h: entry.contentRect.height }));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   useEffect(() => {
     if (!cameraSupported()) return;
     let stream: MediaStream | null = null;
     let cancelled = false;
+    const v = video.current;
+    // The stream's real size (it changes if the phone rotates).
+    const onSize = () => v && v.videoWidth && setVideoSize({ w: v.videoWidth, h: v.videoHeight });
+    v?.addEventListener("loadedmetadata", onSize);
+    v?.addEventListener("resize", onSize);
     navigator.mediaDevices
       .getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1440 } }, audio: false })
       .then(async (s) => {
         if (cancelled) return s.getTracks().forEach((t) => t.stop());
         stream = s;
-        if (video.current) {
-          video.current.srcObject = s;
-          await video.current.play().catch(() => {});
+        if (v) {
+          v.srcObject = s;
+          await v.play().catch(() => {});
+          onSize();
         }
         setCam("live");
       })
       .catch((err: DOMException) => setCam(err?.name === "NotAllowedError" ? "denied" : "unavailable"));
     return () => {
       cancelled = true;
+      v?.removeEventListener("loadedmetadata", onSize);
+      v?.removeEventListener("resize", onSize);
       stream?.getTracks().forEach((t) => t.stop());
     };
   }, []);
 
+  const live = cam === "live" && Boolean(videoSize);
+  const frameMedia = live ? videoSize! : ghost && ghostSize ? ghostSize : DEFAULT_FRAME;
+  const frame = areaSize ? fitContain(areaSize, frameMedia) : null;
+
+  /** Capture the full camera frame — exactly the field of view shown in the capture frame. */
   const captureFrame = () => {
     const v = video.current;
     if (!v || !v.videoWidth) return;
     const canvas = document.createElement("canvas");
     canvas.width = v.videoWidth;
     canvas.height = v.videoHeight;
-    canvas.getContext("2d")!.drawImage(v, 0, 0);
+    canvas.getContext("2d")!.drawImage(v, 0, 0, canvas.width, canvas.height);
     setFlash((n) => n + 1);
     canvas.toBlob(
       (blob) => blob && onCapture(new File([blob], `scan-${Date.now()}.jpg`, { type: "image/jpeg" }), ghost?.scan.id),
@@ -86,7 +135,7 @@ export function ScanScreen({ wt, onCapture }: { wt: Walkthrough; onCapture: (fil
     if (file) onCapture(file, ghost?.scan.id);
   };
 
-  const live = cam === "live";
+  const ghostWhat = ghost?.findings[0]?.details.title.toLowerCase();
   const mood: LumiMood = ghost ? "ready" : busy ? "thinking" : "ready";
   const title = ghost
     ? `Line up with scan ${ghost.scan.number}`
@@ -96,11 +145,13 @@ export function ScanScreen({ wt, onCapture }: { wt: Walkthrough; onCapture: (fil
         ? "Scan anywhere you like"
         : "Let’s look at this space";
   const detail = ghost
-    ? "Stand where you took that photo and match the outline. I’ll re-check its findings directly."
+    ? live
+      ? `Match the faint outline, then tap the shutter. I’ll re-check ${ghostWhat ?? "its findings"} directly.`
+      : `Take your photo from where this one was taken. I’ll re-check ${ghostWhat ?? "its findings"} directly.`
     : busy
       ? "You can keep scanning. I’ll get to this one next."
-      : openCount
-        ? `${openCount} ${openCount === 1 ? "concern is" : "concerns are"} still open. To re-check one, take the photo from the same spot.`
+      : ghostOptions.length
+        ? `${openCount} ${openCount === 1 ? "concern is" : "concerns are"} still open. Re-checking one? Tap its photo under “Line up”.`
         : "Point at an entrance, walkway or room. I look for steps, blocked paths and things sticking out.";
 
   return (
@@ -108,43 +159,45 @@ export function ScanScreen({ wt, onCapture }: { wt: Walkthrough; onCapture: (fil
       <input ref={takeInput} type="file" accept="image/*" capture="environment" className="sr-only" tabIndex={-1} onChange={onPicked} />
       <input ref={pickInput} type="file" accept="image/*,.heic,.heif" className="sr-only" tabIndex={-1} onChange={onPicked} />
 
-      {/* Viewport */}
       <div className="absolute inset-1.5 overflow-hidden rounded-[44px] bg-[#0b0b0c] sm:rounded-[42px]">
-        <video
-          ref={video}
-          playsInline
-          muted
-          aria-label="Camera viewfinder"
-          className={`absolute inset-0 size-full object-cover transition-opacity duration-500 ${live ? "opacity-100" : "opacity-0"}`}
-        />
-        {ghost && (
-          // eslint-disable-next-line @next/next/no-img-element -- local blob URL
-          <img src={ghost.url} alt="" aria-hidden className="pointer-events-none absolute inset-0 size-full object-cover opacity-35 mix-blend-screen" />
-        )}
-        <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_bottom,rgba(0,0,0,0.55),transparent_24%,transparent_55%,rgba(0,0,0,0.8))]" />
-
-        {!live && (
-          <div className="absolute inset-x-8 top-[38%] text-center text-[15px] leading-snug text-white/80">
-            {cam === "starting" && <p>Starting camera…</p>}
-            {cam === "denied" && <p>Camera access is off. You can still take or choose a photo below.</p>}
-            {cam === "unavailable" && <p>Take a photo with your camera, or choose one from your library.</p>}
+        {/* Space for the capture frame: below Lumi's capsule, above the controls. */}
+        <div
+          ref={area}
+          className={`absolute inset-x-2 top-[calc(var(--safe-top)+124px)] ${ghostOptions.length ? "bottom-[calc(var(--safe-bottom)+188px)]" : "bottom-[calc(var(--safe-bottom)+132px)]"}`}
+        >
+          <div
+            className="absolute overflow-hidden rounded-[26px] bg-black ring-1 ring-white/25 transition-[width,height,left,top] duration-300"
+            style={frame ? { left: frame.left, top: frame.top, width: frame.width, height: frame.height } : { inset: 0, opacity: 0 }}
+          >
+            <video
+              ref={video}
+              playsInline
+              muted
+              aria-label="Camera viewfinder. The full frame shown is what will be analyzed."
+              className={`absolute inset-0 size-full object-contain transition-opacity duration-500 ${live ? "opacity-100" : "opacity-0"}`}
+            />
+            {ghost && (
+              // eslint-disable-next-line @next/next/no-img-element -- local blob URL
+              <img
+                src={ghost.url}
+                alt=""
+                aria-hidden
+                onLoad={(e) => setGhostSize({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })}
+                className={`pointer-events-none absolute inset-0 size-full object-contain ${live ? "opacity-35 mix-blend-screen" : "opacity-70"}`}
+              />
+            )}
+            {!live && (
+              <div className="absolute inset-x-6 top-1/2 -translate-y-1/2 text-center text-[15px] leading-snug text-white/85 [text-shadow:0_1px_8px_rgba(0,0,0,0.8)]">
+                {cam === "starting" && <p>Starting camera…</p>}
+                {cam === "denied" && <p>Camera access is off. You can still take or choose a photo below.</p>}
+                {cam === "unavailable" && !ghost && <p>Take a photo with your camera, or choose one from your library.</p>}
+              </div>
+            )}
+            {flash > 0 && <div key={flash} aria-hidden className="animate-flash pointer-events-none absolute inset-0 bg-white" />}
+            <IridescentEdge active={Boolean(busy)} ring={2} bloom={14} speed={5} />
           </div>
-        )}
-
-        {live && (
-          <div aria-hidden className="pointer-events-none absolute inset-x-[12%] top-[26%] bottom-[30%]">
-            {[
-              "top-0 left-0 border-t-2 border-l-2 rounded-tl-[22px]",
-              "top-0 right-0 border-t-2 border-r-2 rounded-tr-[22px]",
-              "bottom-0 left-0 border-b-2 border-l-2 rounded-bl-[22px]",
-              "right-0 bottom-0 border-r-2 border-b-2 rounded-br-[22px]",
-            ].map((c) => (
-              <span key={c} className={`absolute size-9 border-white/85 ${c}`} />
-            ))}
-          </div>
-        )}
-        {flash > 0 && <div key={flash} aria-hidden className="animate-flash pointer-events-none absolute inset-0 bg-white" />}
-        <IridescentEdge active={Boolean(busy)} ring={2.5} bloom={22} speed={5} />
+        </div>
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-[calc(var(--safe-top)+124px)] bg-[linear-gradient(to_bottom,rgba(0,0,0,0.55),transparent)]" />
       </div>
 
       {/* Lumi guidance */}
@@ -155,16 +208,18 @@ export function ScanScreen({ wt, onCapture }: { wt: Walkthrough; onCapture: (fil
       {/* Controls */}
       <div className="absolute inset-x-0 bottom-[calc(var(--safe-bottom)+12px)] z-10 px-4">
         {ghostOptions.length > 0 && (
-          <div className="mx-auto mb-3 w-fit max-w-full">
+          <div className="relative mx-auto mb-3 w-fit max-w-full rounded-full">
+            {/* A gentle glow while Line up is useful and unused, so it's noticed; it never blocks scanning. */}
+            {!ghost && <IridescentEdge active ring={1.5} bloom={10} speed={4} />}
             <div
               role="radiogroup"
-              aria-label="Line up with an earlier photo"
-              className="no-scrollbar flex items-center gap-1 overflow-x-auto rounded-full border border-white/15 bg-black/45 p-1 backdrop-blur-xl"
+              aria-label="Line up with an earlier photo to re-check its findings"
+              className="no-scrollbar relative flex items-center gap-1 overflow-x-auto rounded-full border border-white/15 bg-black/55 p-1 backdrop-blur-xl"
             >
-              <span className="flex shrink-0 items-center gap-1 pr-1 pl-2.5 text-[11px] font-semibold tracking-[0.06em] text-white/75 uppercase">
+              <span className="flex shrink-0 items-center gap-1 pr-1 pl-2.5 text-[11px] font-semibold tracking-[0.06em] text-white/80 uppercase">
                 <Layers size={14} /> Line up
               </span>
-              {ghostOptions.map(({ scan, url }) => {
+              {ghostOptions.map(({ scan, url, findings }) => {
                 const on = scan.id === ghostScanId;
                 return (
                   <button
@@ -172,8 +227,11 @@ export function ScanScreen({ wt, onCapture }: { wt: Walkthrough; onCapture: (fil
                     type="button"
                     role="radio"
                     aria-checked={on}
-                    aria-label={`Show scan ${scan.number} as a guide`}
-                    onClick={() => setGhostScanId(on ? null : scan.id)}
+                    aria-label={`Line up with scan ${scan.number} to re-check ${findings.map((f) => f.details.title).join(", ")}`}
+                    onClick={() => {
+                      setGhostSize(null);
+                      setGhostScanId(on ? null : scan.id);
+                    }}
                     className={`pressable flex min-h-11 shrink-0 items-center gap-1.5 rounded-full py-1 pr-3 pl-1 text-[14px] font-semibold ${on ? "bg-white text-black" : "text-white"}`}
                   >
                     {/* eslint-disable-next-line @next/next/no-img-element -- local blob URL */}
@@ -207,7 +265,7 @@ export function ScanScreen({ wt, onCapture }: { wt: Walkthrough; onCapture: (fil
           <span className="size-12" aria-hidden />
         </div>
         <p className="mt-2 text-center text-[13px] font-medium text-white/85" aria-hidden>
-          {live ? "Tap to scan" : "Take or choose a photo"}
+          {live ? (ghost ? `Lined up with scan ${ghost.scan.number} · tap to scan` : "Tap to scan") : "Take or choose a photo"}
         </p>
       </div>
     </div>

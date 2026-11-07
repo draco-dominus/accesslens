@@ -80,3 +80,32 @@ export function AiBadge({ className = "" }: { className?: string }) {
     </span>
   );
 }
+
+/** Compact status for one-line rows: an icon with its label for assistive tech (and as a tooltip). */
+export function StatusIcon({ status }: { status: FindingStatus }) {
+  const label = STATUS_LABEL[status];
+  const common = "grid size-6 shrink-0 place-items-center rounded-full";
+  if (status === "appears_improved")
+    return (
+      <span role="img" aria-label={label} title={label} className={`${common} bg-[color-mix(in_srgb,var(--color-success)_18%,transparent)]`}>
+        <Check size={14} strokeWidth={2.8} className="text-success" />
+      </span>
+    );
+  if (status === "needs_verification")
+    return (
+      <span role="img" aria-label={label} title={label} className={`${common} bg-[color-mix(in_srgb,var(--color-caution)_18%,transparent)] text-[13px] font-bold text-caution`}>
+        ?
+      </span>
+    );
+  if (status === "still_observed")
+    return (
+      <span role="img" aria-label={label} title={label} className={`${common} bg-[color-mix(in_srgb,var(--color-alert)_14%,transparent)]`}>
+        <Alert size={13} className="text-alert" />
+      </span>
+    );
+  return (
+    <span role="img" aria-label={label} title={label} className={common}>
+      <span className="size-2.5 rounded-full bg-caution" />
+    </span>
+  );
+}

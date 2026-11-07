@@ -1,19 +1,20 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { findingCaptionForScan } from "@/lib/session/lumi";
-import type { Session, TrackedFinding } from "@/lib/session/types";
-import { ChevronRight } from "../ui/Icons";
-import { BarrierIcon } from "../ui/Needs";
+import type { TrackedFinding } from "@/lib/session/types";
 import { IridescentEdge } from "../ui/primitives";
 
 /**
- * Image-first view of a scan. The photo is the centerpiece; findings connect to it through:
- *  - a rail of finding chips over the photo (tap → that finding's evidence caption + its card), and
- *  - an evidence caption quoting the AI's own described location and what it saw.
- * There are deliberately NO boxes or markers on the image: the backend returns no coordinates, and
- * drawing guessed regions would look like computer vision we don't have. People can inspect the
- * evidence themselves with pinch / double-tap zoom and pan, or the zoom buttons (no gesture required).
+ * The scanned photo, unobstructed.
+ *
+ * Layout guarantees nothing sits on the image: the stage starts below the floating nav and ends above
+ * the results sheet, and the numbered finding references + zoom controls live in a narrow gutter BESIDE
+ * the image, not on it. There is no caption or text over the photo.
+ *
+ * References are numbers along the edge, never placed at positions on the image: the analysis returns
+ * no coordinates, and arbitrary positions would look like detections we don't have. Selecting one gives
+ * quiet feedback (the number enlarges and pulses once, the frame glows briefly); the finding's name is
+ * shown in the sheet, below the photo.
  */
 
 const MAX_ZOOM = 4;
@@ -25,12 +26,9 @@ export function PhotoStage({
   alt,
   emptyText,
   processing,
-  session,
-  scanId,
   findings,
   selectedId,
   onSelect,
-  onOpenDetails,
   compact = false,
   bottom,
 }: {
@@ -38,16 +36,12 @@ export function PhotoStage({
   alt: string;
   emptyText: string;
   processing: boolean;
-  session: Session;
-  scanId: string;
   findings: TrackedFinding[];
   selectedId: string | null;
   onSelect: (id: string | null) => void;
-  /** Open the full Finding Details screen. */
-  onOpenDetails?: (id: string) => void;
-  /** Little photo visible (sheet fully raised): hide references, zoom and caption. */
+  /** Sheet fully raised (little photo visible): hide the gutter. */
   compact?: boolean;
-  /** Space taken by the sheet below (CSS length); the photo fits above it. */
+  /** Space taken by the sheet below (CSS length); the photo ends above it. */
   bottom: string;
 }) {
   const stage = useRef<HTMLDivElement>(null);
@@ -65,8 +59,6 @@ export function PhotoStage({
     return { scale, x: Math.max(-mx, Math.min(mx, v.x)), y: Math.max(-my, Math.min(my, v.y)) };
   };
   const zoomBy = (factor: number) => setView((v) => clamp({ ...v, scale: v.scale * factor }));
-  const selected = findings.find((f) => f.id === selectedId);
-  const selectedCaption = selected ? findingCaptionForScan(session, scanId, selected) : null;
 
   const onPointerDown = (e: React.PointerEvent) => {
     if (!photo) return;
@@ -98,8 +90,7 @@ export function PhotoStage({
       const now = performance.now();
       if (now - lastTap.current < 280) {
         // Double tap: zoom to 2.5× around the tap, or back out.
-        const el = stage.current!;
-        const r = el.getBoundingClientRect();
+        const r = stage.current!.getBoundingClientRect();
         const dx = e.clientX - (r.left + r.width / 2), dy = e.clientY - (r.top + r.height / 2);
         setView((v) => (v.scale > 1 ? IDENTITY : clamp({ scale: 2.5, x: -dx * 1.5, y: -dy * 1.5 })));
         lastTap.current = 0;
@@ -107,82 +98,47 @@ export function PhotoStage({
     }
   };
 
+  const showGutter = !compact && (findings.length > 0 || Boolean(photo));
+
   return (
     <div
-      className="absolute inset-x-1.5 top-1.5 overflow-hidden rounded-[44px] bg-[#0b0b0c] transition-[bottom] duration-[520ms] ease-[var(--ease-ios)] sm:rounded-[42px]"
-      style={{ bottom: `calc(${bottom} - 28px)` }}
+      className="absolute inset-x-1.5 flex gap-1.5 transition-[bottom] duration-[520ms] ease-[var(--ease-ios)]"
+      style={{ top: "calc(var(--safe-top) + 60px)", bottom: `calc(${bottom} + 8px)` }}
     >
-      <div
-        ref={stage}
-        className="absolute inset-0 touch-none"
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
-      >
-        {photo ? (
-          // eslint-disable-next-line @next/next/no-img-element -- local blob URL
-          <img
-            src={photo}
-            alt={alt}
-            draggable={false}
-            style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})`, viewTransitionName: "scan-photo" }}
-            className={`absolute inset-0 size-full object-contain select-none ${gesturing ? "" : "transition-transform duration-300 ease-[var(--ease-ios)]"}`}
-          />
-        ) : (
-          <p className="absolute inset-x-8 top-[40%] text-center text-[14px] text-white/70">{emptyText}</p>
-        )}
-      </div>
-      <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_bottom,rgba(0,0,0,0.5),transparent_22%,transparent_70%,rgba(0,0,0,0.55))]" />
-      {/* Focus: the photo dims softly while one finding is being explored. */}
-      <div aria-hidden className={`pointer-events-none absolute inset-0 bg-black/30 transition-opacity duration-500 ${selectedCaption && !compact ? "opacity-100" : "opacity-0"}`} />
-      {/* Analysis in progress: a soft light sweep. It marks activity only; it never implies detections. */}
-      {processing && photo && <div aria-hidden className="scan-sweep pointer-events-none absolute inset-0" />}
-      <IridescentEdge active={processing} ring={2.5} bloom={22} speed={5} />
-
-      {/* Evidence caption for the selected finding, linked to its reference below. Words only: nothing is
-          drawn on the image, because no coordinates exist. */}
-      {selectedCaption && selected && !compact && (
-        <div className="absolute inset-x-3 bottom-[92px]" aria-live="polite">
-          <div key={selected.id} className="animate-rise-in rounded-[22px] border border-white/15 bg-black/65 px-4 pt-3 pb-2.5 text-white backdrop-blur-xl">
-            <p className="text-[13px] font-semibold text-white/80">{selectedCaption.label}</p>
-            <p className="mt-0.5 line-clamp-3 text-[15px] leading-snug">{selectedCaption.text}</p>
-            {onOpenDetails && (
-              <button
-                type="button"
-                onClick={() => onOpenDetails(selected.id)}
-                className="pressable mt-2 inline-flex min-h-10 items-center gap-1 rounded-full bg-white px-3.5 text-[14px] font-semibold text-black"
-              >
-                Details <ChevronRight size={16} />
-              </button>
-            )}
-          </div>
-          {/* Notch pointing down to the selected reference. */}
-          <span aria-hidden className="ml-7 block size-3 -translate-y-1.5 rotate-45 border-r border-b border-white/15 bg-black/65" />
-        </div>
-      )}
-
-      {/* Zoom controls: an alternative to pinch/double-tap. */}
-      {photo && !compact && !selectedCaption && (
-        <div className="absolute right-3 bottom-[76px] flex flex-col gap-1.5" role="group" aria-label="Photo zoom">
-          <ZoomButton label="Zoom in" onClick={() => zoomBy(1.6)} disabled={view.scale >= MAX_ZOOM}>
-            +
-          </ZoomButton>
-          <ZoomButton label="Zoom out" onClick={() => zoomBy(1 / 1.6)} disabled={view.scale <= 1}>
-            −
-          </ZoomButton>
-          {view.scale > 1 && (
-            <ZoomButton label="Reset zoom" onClick={() => setView(IDENTITY)}>
-              1×
-            </ZoomButton>
+      {/* Image area: nothing is layered on top of the photo. */}
+      <div className="relative min-w-0 flex-1 overflow-hidden rounded-[30px] bg-[#0b0b0c]">
+        <div
+          ref={stage}
+          className="absolute inset-0 touch-none"
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerUp}
+        >
+          {photo ? (
+            // eslint-disable-next-line @next/next/no-img-element -- local blob URL
+            <img
+              src={photo}
+              alt={alt}
+              draggable={false}
+              style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})`, viewTransitionName: "scan-photo" }}
+              className={`absolute inset-0 size-full object-contain select-none ${gesturing ? "" : "transition-transform duration-300 ease-[var(--ease-ios)]"}`}
+            />
+          ) : (
+            <p className="absolute inset-x-6 top-[42%] text-center text-[14px] text-white/70">{emptyText}</p>
           )}
         </div>
-      )}
+        {/* Analysis in progress: a soft light sweep — activity only, never detections. */}
+        {processing && photo && <div aria-hidden className="scan-sweep pointer-events-none absolute inset-0" />}
+        <IridescentEdge active={processing} ring={2.5} bloom={18} speed={5} />
+        {/* Quiet selection feedback: the frame glows once. Border only; the image stays clear. */}
+        {selectedId && <div key={selectedId} aria-hidden className="photo-focus pointer-events-none absolute inset-0 rounded-[30px]" />}
+      </div>
 
-      {/* Numbered finding references: linked to the findings, not placed on the image. */}
-      {findings.length > 0 && !compact && (
-        <div className="absolute inset-x-0 bottom-9 px-3">
-          <div className="no-scrollbar flex gap-1.5 overflow-x-auto pr-3" role="group" aria-label="Finding references in this photo">
+      {/* Edge gutter: numbered references (not positioned on the image) + zoom. */}
+      {showGutter && (
+        <div className="flex w-11 shrink-0 flex-col items-center gap-1.5 py-1">
+          <div className="no-scrollbar flex min-h-0 flex-1 flex-col items-center gap-1.5 overflow-y-auto" role="group" aria-label="Finding references">
             {findings.map((f) => {
               const on = f.id === selectedId;
               return (
@@ -192,16 +148,29 @@ export function PhotoStage({
                   aria-pressed={on}
                   aria-label={`Finding ${f.number}: ${f.details.title}${on ? ", selected" : ""}`}
                   onClick={() => onSelect(on ? null : f.id)}
-                  className={`pressable relative flex min-h-11 max-w-[80%] shrink-0 items-center gap-2 rounded-full border py-1.5 pr-3.5 pl-1.5 text-[14px] font-semibold backdrop-blur-xl transition-colors duration-300 ${on ? "border-white bg-white text-black" : "border-white/20 bg-black/55 text-white"}`}
+                  className={`pressable relative grid size-11 shrink-0 place-items-center rounded-full border text-[15px] font-bold transition-[background-color,color,transform] duration-300 ${on ? "scale-105 border-white bg-white text-black" : "border-white/20 bg-white/10 text-white"}`}
                 >
                   {on && <span key={`focus-${f.id}`} aria-hidden className="ref-focus pointer-events-none absolute inset-0 rounded-full" />}
-                  <span className={`grid size-7 shrink-0 place-items-center rounded-full text-[13px] font-bold ${on ? "bg-black text-white" : "bg-white/15"}`}>{f.number}</span>
-                  <BarrierIcon type={f.details.barrierType} size={15} className="shrink-0 opacity-80" />
-                  <span className="truncate">{f.details.title}</span>
+                  {f.number}
                 </button>
               );
             })}
           </div>
+          {photo && (
+            // One toggle keeps the gutter short enough for several references on small phones;
+            // pinch and double-tap zoom work too.
+            <div className="flex shrink-0 flex-col" role="group" aria-label="Photo zoom">
+              {view.scale > 1 ? (
+                <ZoomButton label="Reset zoom" onClick={() => setView(IDENTITY)}>
+                  1×
+                </ZoomButton>
+              ) : (
+                <ZoomButton label="Zoom in" onClick={() => zoomBy(2)}>
+                  +
+                </ZoomButton>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -215,7 +184,7 @@ function ZoomButton({ label, onClick, disabled, children }: { label: string; onC
       aria-label={label}
       onClick={onClick}
       disabled={disabled}
-      className="pressable grid size-11 place-items-center rounded-full border border-white/20 bg-black/50 text-[18px] font-semibold text-white backdrop-blur-xl disabled:opacity-35"
+      className="pressable grid size-11 place-items-center rounded-full border border-white/20 bg-white/10 text-[16px] font-semibold text-white disabled:opacity-35"
     >
       {children}
     </button>

@@ -1,9 +1,11 @@
 "use client";
 
+import { useId, useState, type ReactNode } from "react";
 import type { useWalkthrough } from "@/hooks/useWalkthrough";
 import { STATUS_LABEL } from "@/lib/session/lumi";
 import type { FindingEvent, TrackedFinding } from "@/lib/session/types";
 import { BeforeAfter } from "../ui/BeforeAfter";
+import { ChevronDown } from "../ui/Icons";
 import { StatusTag } from "../ui/Tags";
 
 type Walkthrough = ReturnType<typeof useWalkthrough>;
@@ -101,6 +103,49 @@ export function DuplicatePrompt({ wt, scanId, findingId }: { wt: Walkthrough; sc
             </button>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A clearly labeled, collapsed-by-default section for supporting information. The header can carry a
+ * short summary (e.g. a status) so people know what's inside before opening it.
+ */
+export function Disclosure({
+  icon,
+  label,
+  summary,
+  defaultOpen = false,
+  children,
+  sectionRef,
+}: {
+  icon: ReactNode;
+  label: string;
+  summary?: ReactNode;
+  defaultOpen?: boolean;
+  children: ReactNode;
+  sectionRef?: React.Ref<HTMLDivElement>;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const id = useId();
+  return (
+    <div ref={sectionRef} className="overflow-hidden rounded-[22px] bg-surface shadow-[var(--shadow-soft)]">
+      <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} aria-controls={id} className="flex min-h-14 w-full items-center gap-3 px-4 py-2 text-left">
+        <span className="grid size-8 shrink-0 place-items-center rounded-full bg-surface-2 text-muted" aria-hidden>
+          {icon}
+        </span>
+        {/* Summary sits under the label so neither is squeezed on narrow phones. */}
+        <span className="flex min-w-0 flex-1 flex-col items-start gap-1">
+          <span className="text-[16px] font-semibold tracking-[-0.01em]">{label}</span>
+          {summary}
+        </span>
+        <ChevronDown size={18} className={`shrink-0 text-muted transition-transform duration-300 ${open ? "rotate-180" : ""}`} />
+      </button>
+      <div id={id} className={`grid transition-[grid-template-rows] duration-[420ms] ease-[var(--ease-ios)] ${open ? "grid-rows-[1fr]" : "grid-rows-[0fr]"}`} inert={!open}>
+        <div className="min-h-0 overflow-hidden">
+          <div className="px-4 pb-4 text-[16px] leading-[1.55]">{children}</div>
+        </div>
       </div>
     </div>
   );

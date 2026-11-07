@@ -59,6 +59,7 @@ export function AccessLensApp() {
   const [scanId, setScanId] = useState<string | null>(null);
   const [freshScanId, setFreshScanId] = useState<string | null>(null);
   const [findingId, setFindingId] = useState<string | null>(null);
+  const [focusArrival, setFocusArrival] = useState(false);
   const [lineUpTarget, setLineUpTarget] = useState<string | undefined>();
   const [lumiFindingId, setLumiFindingId] = useState<string | null>(null);
   const [askReturn, setAskReturn] = useState<Screen>("welcome");
@@ -93,14 +94,16 @@ export function AccessLensApp() {
     setScanId(id);
     setFreshScanId(id);
     setFindingId(null);
+    setFocusArrival(false);
     go("discover");
   };
 
-  /** Inspect a scan's photo, optionally with one finding focused on it. */
-  const openScan = (id: string, finding?: string) => {
+  /** Inspect a scan's photo, optionally with one finding selected; `focus` gives the photo the room. */
+  const openScan = (id: string, finding?: string, focus = false) => {
     setScanId(id);
     setFreshScanId(null);
     setFindingId(finding ?? null);
+    setFocusArrival(focus && Boolean(finding));
     go("discover");
   };
 
@@ -113,9 +116,9 @@ export function AccessLensApp() {
     go("finding");
   };
 
-  /** Back from details to the photo, with that finding still focused. */
+  /** Back from details: that scan's photo, the finding's reference selected, the photo given the room. */
   const backToPhoto = () => {
-    if (detail) openScan(detail.scanId, detail.findingId);
+    if (detail) openScan(detail.scanId, detail.findingId, true);
     else go("discover");
   };
 
@@ -164,6 +167,7 @@ export function AccessLensApp() {
               fresh={freshScanId === currentScan.id}
               theme={theme}
               selectedFindingId={findingId}
+              focusOnArrival={focusArrival}
               onSelectFinding={setFindingId}
               onOpenFinding={(id, section) => openFinding(id, currentScan.id, section)}
               onOpenScan={openScan}

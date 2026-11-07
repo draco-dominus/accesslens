@@ -13,7 +13,7 @@ import { ChevronDown, ChevronRight, Compare, Info, Layers, Rescan } from "../ui/
 import { BarrierIcon, NeedMarks } from "../ui/Needs";
 import { activeMood, Button } from "../ui/primitives";
 import { Sheet, type Detent } from "../ui/Sheet";
-import { AiBadge, StatusTag } from "../ui/Tags";
+import { AiBadge, StatusIcon, StatusTag } from "../ui/Tags";
 import type { Theme } from "../app/AccessLensApp";
 
 type Walkthrough = ReturnType<typeof useWalkthrough>;
@@ -37,6 +37,7 @@ export function DiscoverScreen({
   fresh,
   theme,
   selectedFindingId,
+  focusOnArrival = false,
   onSelectFinding,
   onOpenFinding,
   onOpenScan,
@@ -49,6 +50,8 @@ export function DiscoverScreen({
   fresh: boolean;
   theme: Theme;
   selectedFindingId: string | null;
+  /** Arrived via "Show in photo": give the photo the room. */
+  focusOnArrival?: boolean;
   onSelectFinding: (id: string | null) => void;
   /** Open Finding Details (optionally at a section, e.g. the before/after comparison). */
   onOpenFinding: (findingId: string, section?: "compare") => void;
@@ -73,7 +76,7 @@ export function DiscoverScreen({
     .map((i) => ({ finding: i.finding, event: i.finding.history.filter((h) => h.scanId === scan.id).at(-1) }))
     .filter((x): x is { finding: TrackedFinding; event: NonNullable<typeof x.event> } => Boolean(x.event?.comparison));
 
-  const [detent, setDetent] = useState<Detent>(() => (selectedFindingId || (!processing && items.length) ? "half" : "peek"));
+  const [detent, setDetent] = useState<Detent>(() => (focusOnArrival ? "peek" : selectedFindingId || (!processing && items.length) ? "half" : "peek"));
   const [trustOpen, setTrustOpen] = useState(false);
   const tick = useTicker(processing, 1000);
   // Developer timing breakdown: open the app with ?timing=1 (this screen only renders client-side).
@@ -94,6 +97,7 @@ export function DiscoverScreen({
   };
 
   const mood: LumiMood = checking || processing ? "thinking" : scanMood(scan);
+  const selected = items.find((i) => i.finding.id === selectedFindingId)?.finding;
   const activity = scanActivity(scan);
   const newCount = items.filter((i) => i.role === "new").length;
   const updatedCount = items.length - newCount;
@@ -116,7 +120,7 @@ export function DiscoverScreen({
               {activity.detail ? `${activity.detail} · ` : ""}
               {Math.max(0, Math.round((tick - scan.createdAt) / 1000))}s · you can keep scanning
             </p>
-          ) : scan.step === "done" ? (
+          ) : scan.step === "done" && selected ? null : scan.step === "done" ? (
             <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
               <span className="text-[13px] whitespace-nowrap text-muted">
                 Scan {scan.number} · {newCount ? `${newCount} new` : "nothing new"}
@@ -127,6 +131,20 @@ export function DiscoverScreen({
           ) : null}
         </div>
       </div>
+      {/* The selected reference, named here — below the photo, never on it. */}
+      {selected && scan.step === "done" && (
+        <div key={selected.id} className="animate-rise-in mt-3 flex items-center gap-2.5 rounded-[18px] bg-surface-2 py-1.5 pr-1.5 pl-2.5" aria-live="polite">
+          <span className="grid size-8 shrink-0 place-items-center rounded-full bg-primary text-[14px] font-bold text-on-primary">{selected.number}</span>
+          <span className="min-w-0 flex-1 truncate text-[15px] font-semibold">{selected.details.title}</span>
+          <button
+            type="button"
+            onClick={() => onOpenFinding(selected.id)}
+            className="pressable flex min-h-10 shrink-0 items-center gap-0.5 rounded-full bg-primary px-3.5 text-[14px] font-semibold text-on-primary"
+          >
+            Details <ChevronRight size={16} />
+          </button>
+        </div>
+      )}
     </div>
   );
 
@@ -137,12 +155,9 @@ export function DiscoverScreen({
         alt={`Scan ${scan.number}${scan.analysis ? `: ${scan.analysis.sceneSummary}` : ""}`}
         emptyText={wt.photoRestore === "loading" ? "Restoring this photo from your device…" : wt.restored ? "This photo could not be restored. The finding notes are still available." : "Preparing photo…"}
         processing={processing || Boolean(checking)}
-        session={session}
-        scanId={scan.id}
         findings={items.map((i) => i.finding)}
         selectedId={selectedFindingId}
         onSelect={selectFromPhoto}
-        onOpenDetails={(id) => onOpenFinding(id)}
         compact={detent === "full"}
         bottom={HEIGHTS[detent]}
       />
@@ -171,15 +186,6 @@ export function DiscoverScreen({
                 </div>
               )}
 
-              {scan.step === "done" && messages.length > 1 && (
-                <div className="space-y-1 pl-[56px]">
-                  {messages.slice(1, 3).map((m, i) => (
-                    <p key={i} className="line-clamp-2 text-[14px] leading-snug text-muted">
-                      {m}
-                    </p>
-                  ))}
-                </div>
-              )}
             </div>
 
             {/* Re-check result first: the before/after is one tap away. */}
@@ -268,7 +274,6 @@ export function DiscoverScreen({
               >
                 <Info size={15} /> About these results
               </button>
-              <p className="text-[12px] leading-relaxed text-muted">Potential barriers from photos only. Not an accessibility assessment or certification.</p>
             </div>
           </div>
         </Sheet>
@@ -281,26 +286,21 @@ export function DiscoverScreen({
   );
 }
 
-/** One concise, tappable row per finding: number, type icon, title, one-line context, status, needs. */
+/** One line per finding: number, title, need icons, status icon. Tap → Finding Details. */
 function FindingRow({ finding, summary, selected, onOpen }: { finding: TrackedFinding; summary: string; selected: boolean; onOpen: () => void }) {
   return (
     <button
       type="button"
       onClick={onOpen}
-      aria-label={`Finding ${finding.number}: ${finding.details.title}. ${STATUS_LABEL[finding.status]}. Open details`}
-      className={`pressable flex min-h-[68px] w-full items-center gap-3 rounded-[22px] bg-surface px-3.5 py-3 text-left shadow-[var(--shadow-soft)] transition-shadow ${selected ? "ring-2 ring-fg" : ""}`}
+      aria-label={`Finding ${finding.number}: ${finding.details.title}. ${STATUS_LABEL[finding.status]}. ${summary}. Open details`}
+      className={`pressable flex min-h-14 w-full items-center gap-3 rounded-[20px] bg-surface px-3 text-left shadow-[var(--shadow-soft)] ${selected ? "ring-2 ring-fg" : ""}`}
     >
-      <span className={`grid size-9 shrink-0 place-items-center rounded-full text-[15px] font-bold ${selected ? "bg-primary text-on-primary" : "bg-surface-2"}`}>{finding.number}</span>
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-[16px] font-semibold tracking-[-0.01em]">{finding.details.title}</span>
-        <span className="mt-1.5 flex items-center gap-2">
-          <BarrierIcon type={finding.details.barrierType} size={16} className="shrink-0 text-muted" />
-          <StatusTag status={finding.status} />
-          <NeedMarks who={finding.details.whoMayBeAffected} />
-        </span>
-        <span className="sr-only">{summary}</span>
-      </span>
-      <ChevronRight size={18} className="shrink-0 text-muted" />
+      <span className={`grid size-8 shrink-0 place-items-center rounded-full text-[14px] font-bold ${selected ? "bg-primary text-on-primary" : "bg-surface-2"}`}>{finding.number}</span>
+      <BarrierIcon type={finding.details.barrierType} size={17} className="shrink-0 text-muted" />
+      <span className="min-w-0 flex-1 truncate text-[16px] font-semibold tracking-[-0.01em]">{finding.details.title}</span>
+      <NeedMarks who={finding.details.whoMayBeAffected} />
+      <StatusIcon status={finding.status} />
+      <ChevronRight size={17} className="shrink-0 text-muted" />
     </button>
   );
 }

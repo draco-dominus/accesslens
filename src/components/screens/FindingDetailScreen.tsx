@@ -1,23 +1,24 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { useWalkthrough } from "@/hooks/useWalkthrough";
 import { accessibilityNeeds, NEED_LABEL } from "@/lib/session/categories";
-import { findingCaptionForScan } from "@/lib/session/lumi";
 import { isOpen, type TrackedFinding } from "@/lib/session/types";
-import { ComparisonEvidence, DuplicatePrompt, History, latestComparison } from "../discover/FindingParts";
+import { firstSentence, isWhole } from "@/lib/text";
+import { ComparisonEvidence, Disclosure, DuplicatePrompt, History, latestComparison } from "../discover/FindingParts";
 import { Sidekick } from "../lumi/Sidekick";
 import { TrustSheet } from "../trust/TrustPanel";
-import { Chat, ChevronLeft, Compare, Eye, History as HistoryIcon, Info, Layers, People, Question, Scan, Wrench } from "../ui/Icons";
-import { BarrierIcon, NeedChips, NeedIcon } from "../ui/Needs";
+import { Chat, ChevronLeft, Compare, Eye, History as HistoryIcon, Info, Layers, Question, Scan, Wrench } from "../ui/Icons";
+import { BarrierIcon, NeedIcon } from "../ui/Needs";
 import { Button, GlassIconButton } from "../ui/primitives";
 import { barrierTypeLabel, StatusTag } from "../ui/Tags";
 
 type Walkthrough = ReturnType<typeof useWalkthrough>;
 
 /**
- * Finding Details: one finding, given room to breathe. Every line comes from recorded data — the
- * analysis fields, the comparison results and the finding's history. Nothing is generated to fill space.
+ * Finding Details, visual-first: the issue, who it may affect, and ONE suggested action up front.
+ * Everything else (evidence, impact, uncertainty, before/after, history) sits in clearly labeled
+ * sections that start collapsed. Every line comes from recorded data; nothing is generated to fill space.
  */
 export function FindingDetailScreen({
   wt,
@@ -33,7 +34,7 @@ export function FindingDetailScreen({
   finding: TrackedFinding;
   /** The scan whose photo the user came from (its photo heads this page). */
   scanId: string;
-  /** Open scrolled to a section (after a re-check: the before/after comparison). */
+  /** Open with this section expanded and in view (after a re-check: the before/after comparison). */
   section?: "compare";
   onBack: () => void;
   onShowInPhoto: () => void;
@@ -44,16 +45,16 @@ export function FindingDetailScreen({
   const d = finding.details;
   const scan = session.scans.find((s) => s.id === scanId);
   const photo = wt.media[scanId]?.imageUrl ?? wt.media[scanId]?.thumbUrl;
-  const caption = findingCaptionForScan(session, scanId, finding);
   const comparison = latestComparison(finding);
-  const hereComparison = finding.history.filter((h) => h.scanId === scanId).at(-1)?.comparison ? finding.history.filter((h) => h.scanId === scanId).at(-1) : undefined;
+  const here = finding.history.filter((h) => h.scanId === scanId).at(-1);
   const scanNo = (id: string) => session.scans.find((s) => s.id === id)?.number ?? "?";
   const needs = accessibilityNeeds(d.whoMayBeAffected);
+  const action = firstSentence(d.suggestedImprovement);
   const [trustOpen, setTrustOpen] = useState(false);
   const scroller = useRef<HTMLDivElement>(null);
   const compareRef = useRef<HTMLDivElement>(null);
 
-  // Arriving from a re-check: bring the before/after into view (scrolls this page only).
+  // Arriving from a re-check: bring the (already expanded) before/after into view — this page only.
   useEffect(() => {
     if (section !== "compare") return;
     const t = window.setTimeout(() => {
@@ -68,7 +69,6 @@ export function FindingDetailScreen({
   return (
     <div className="relative h-full bg-bg text-fg">
       <div ref={scroller} className="no-scrollbar h-full overflow-y-auto overscroll-contain pb-[calc(var(--safe-bottom)+96px)]">
-        {/* Header */}
         <header className="sticky top-0 z-10 flex items-center gap-2 bg-[linear-gradient(to_bottom,var(--bg)_70%,transparent)] px-4 pt-[calc(var(--safe-top)+4px)] pb-3">
           <button
             type="button"
@@ -83,57 +83,75 @@ export function FindingDetailScreen({
           </GlassIconButton>
         </header>
 
-        {/* Photo with this finding's reference */}
+        {/* The photo, unobstructed; tap to inspect it with this finding selected. */}
         {photo && (
-          <button
-            type="button"
-            onClick={onShowInPhoto}
-            aria-label={`Show finding ${finding.number} on the scan ${scan?.number} photo`}
-            className="pressable relative mx-4 block w-[calc(100%-2rem)] overflow-hidden rounded-[28px] bg-black"
-          >
+          <button type="button" onClick={onShowInPhoto} aria-label={`Show finding ${finding.number} on the scan ${scan?.number} photo`} className="pressable mx-4 block w-[calc(100%-2rem)] overflow-hidden rounded-[28px] bg-black">
             {/* eslint-disable-next-line @next/next/no-img-element -- local blob URL */}
-            <img src={photo} alt={`Scan ${scan?.number}${scan?.analysis ? `: ${scan.analysis.sceneSummary}` : ""}`} className="max-h-[38cqh] w-full object-contain" style={{ viewTransitionName: "scan-photo" }} />
-            <span className="absolute bottom-3 left-3 inline-flex items-center gap-2 rounded-full bg-white py-1 pr-3 pl-1 text-[14px] font-semibold text-black shadow-[0_4px_14px_rgba(0,0,0,0.35)]">
-              <span className="grid size-7 place-items-center rounded-full bg-black text-[13px] font-bold text-white">{finding.number}</span>
-              Show in photo
-            </span>
+            <img src={photo} alt={`Scan ${scan?.number}${scan?.analysis ? `: ${scan.analysis.sceneSummary}` : ""}`} className="max-h-[34cqh] w-full object-contain" style={{ viewTransitionName: "scan-photo" }} />
           </button>
         )}
 
-        {/* Title block */}
+        {/* 1 · The issue */}
         <div className="px-5 pt-5">
-          <div className="flex items-center gap-2 text-[13px] font-semibold text-muted">
-            <BarrierIcon type={d.barrierType} size={17} />
-            {barrierTypeLabel(d.barrierType)} · Finding #{finding.number}
-          </div>
-          <h1 className="mt-1.5 text-[26px] leading-[1.15] font-semibold tracking-[-0.03em] text-balance">{d.title}</h1>
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <StatusTag status={finding.status} />
-            <span className="text-[13px] text-muted">
-              First noticed in scan {scanNo(finding.firstScanId)}
-              {finding.lastSeenScanId !== finding.firstScanId ? ` · last seen in scan ${scanNo(finding.lastSeenScanId)}` : ""}
+          <div className="flex items-center gap-2.5">
+            <span className="grid size-8 shrink-0 place-items-center rounded-full bg-primary text-[14px] font-bold text-on-primary">{finding.number}</span>
+            <span className="flex items-center gap-1.5 text-[13px] font-semibold text-muted">
+              <BarrierIcon type={d.barrierType} size={16} />
+              {barrierTypeLabel(d.barrierType)}
             </span>
           </div>
-          {needs.length > 0 && (
-            <div className="mt-3">
-              <NeedChips who={d.whoMayBeAffected} />
-            </div>
+          <h1 className="mt-2 text-[26px] leading-[1.15] font-semibold tracking-[-0.03em] text-balance">{d.title}</h1>
+          <div className="mt-3">
+            <StatusTag status={finding.status} />
+          </div>
+        </div>
+
+        {/* 2 · Who it may affect */}
+        {needs.length > 0 && (
+          <ul className="mt-4 flex flex-wrap gap-2 px-5" aria-label="Accessibility needs">
+            {needs.map((n) => (
+              <li key={n.category} className="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-[14px] font-semibold">
+                <NeedIcon category={n.category} size={16} />
+                {NEED_LABEL[n.category]}
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {/* 3 · One suggested action */}
+        <div className="mx-4 mt-5 rounded-[24px] bg-surface p-4 shadow-[var(--shadow-soft)]">
+          <p className="flex items-center gap-2 text-[13px] font-semibold text-muted">
+            <Wrench size={16} /> Suggested action
+          </p>
+          <p className="mt-1.5 text-[18px] leading-snug font-semibold tracking-[-0.01em]">{action}</p>
+          {onRecheck && (
+            <Button size="md" variant="secondary" className="mt-3" icon={<Layers size={17} />} onClick={onRecheck}>
+              Re-check this spot
+            </Button>
           )}
         </div>
 
         {finding.firstScanId === scanId && (
-          <div className="px-4 pt-4">
+          <div className="px-4 pt-3">
             <DuplicatePrompt wt={wt} scanId={scanId} findingId={finding.id} />
           </div>
         )}
 
-        <div className="space-y-3 px-4 pt-5">
-          <Section icon={<Eye size={18} />} title="Observation">
-            <p>{caption ? caption.text : d.visualEvidence}</p>
-            {caption && <p className="mt-2 text-[13px] text-muted">{caption.label.replace(/^#\d+ · /, "")}</p>}
-          </Section>
+        {/* Supporting information, on demand */}
+        <div className="space-y-2.5 px-4 pt-5">
+          {comparison?.comparison && (
+            <Disclosure
+              sectionRef={compareRef}
+              icon={<Compare size={17} />}
+              label="Before & after"
+              summary={<StatusTag status={comparison.status} />}
+              defaultOpen={section === "compare"}
+            >
+              <ComparisonEvidence wt={wt} finding={finding} event={comparison} />
+            </Disclosure>
+          )}
 
-          <Section icon={<Scan size={18} />} title="Visual evidence">
+          <Disclosure icon={<Eye size={17} />} label="Evidence">
             <dl className="space-y-3">
               <div>
                 <dt className="text-[13px] font-semibold text-muted">Where, as Lumi described it (scan {scanNo(finding.firstScanId)})</dt>
@@ -143,12 +161,12 @@ export function FindingDetailScreen({
                 <dt className="text-[13px] font-semibold text-muted">What Lumi saw</dt>
                 <dd className="mt-0.5">{d.visualEvidence}</dd>
               </div>
-              {hereComparison?.comparison && (
+              {here?.comparison && (
                 <div>
-                  <dt className="text-[13px] font-semibold text-muted">In this photo, compared with scan {hereComparison.referenceScanId ? scanNo(hereComparison.referenceScanId) : "?"}</dt>
+                  <dt className="text-[13px] font-semibold text-muted">In this photo, compared with scan {here.referenceScanId ? scanNo(here.referenceScanId) : "?"}</dt>
                   <dd className="mt-0.5">
                     <ul className="list-disc space-y-1 pl-5">
-                      {hereComparison.comparison.visualEvidence.map((v) => (
+                      {here.comparison.visualEvidence.map((v) => (
                         <li key={v}>{v}</li>
                       ))}
                     </ul>
@@ -157,85 +175,44 @@ export function FindingDetailScreen({
               )}
             </dl>
             <p className="mt-3 text-[12px] leading-snug text-muted">Locations are described in words. AccessLens doesn’t draw detection boxes on photos.</p>
-          </Section>
+          </Disclosure>
 
-          <Section icon={<Info size={18} />} title="Impact">
+          <Disclosure icon={<Info size={17} />} label="Why it matters">
             <p>{d.potentialImpact}</p>
-          </Section>
-
-          <Section icon={<People size={18} />} title="Accessibility needs">
-            {needs.length > 0 && (
-              <ul className="mb-3 space-y-2">
-                {needs.map((n) => (
-                  <li key={n.category} className="flex items-start gap-2.5">
-                    <span className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-full bg-surface-2">
-                      <NeedIcon category={n.category} size={16} />
-                    </span>
-                    <span>
-                      <span className="font-semibold">{NEED_LABEL[n.category]}</span>
-                      <span className="text-muted"> · {n.groups.join(", ")}</span>
-                    </span>
-                  </li>
-                ))}
-              </ul>
+            <p className="mt-3 text-[13px] font-semibold text-muted">Who Lumi said may be affected</p>
+            <p className="mt-0.5">{d.whoMayBeAffected.join(", ")}</p>
+            {!isWhole(d.suggestedImprovement) && (
+              <>
+                <p className="mt-3 text-[13px] font-semibold text-muted">Full suggestion</p>
+                <p className="mt-0.5">{d.suggestedImprovement}</p>
+              </>
             )}
-            <p className="text-[13px] text-muted">Who Lumi said may be affected</p>
-            <ul className="mt-1.5 flex flex-wrap gap-1.5">
-              {d.whoMayBeAffected.map((w) => (
-                <li key={w} className="rounded-full bg-surface-2 px-3 py-1.5 text-[14px] leading-none font-medium">
-                  {w}
-                </li>
-              ))}
-            </ul>
-          </Section>
+          </Disclosure>
 
-          <Section icon={<Wrench size={18} />} title="Suggested action">
-            <p>{d.suggestedImprovement}</p>
-            {finding.status === "appears_improved" && <p className="mt-2 text-[14px] text-muted">The photos suggest an improvement. Confirm the change in person.</p>}
-            {finding.status === "needs_verification" && <p className="mt-2 text-[14px] text-muted">The photos weren’t conclusive. Re-check from the same spot, or verify in person.</p>}
-            {onRecheck && (
-              <Button size="md" variant="secondary" className="mt-3" icon={<Layers size={17} />} onClick={onRecheck}>
-                Re-check this spot
-              </Button>
-            )}
-          </Section>
-
-          <Section icon={<Question size={18} />} title="Uncertainty">
+          <Disclosure icon={<Question size={17} />} label="Uncertainty" summary={comparison?.guardrail ? <span className="rounded-full bg-[color-mix(in_srgb,var(--color-caution)_16%,transparent)] px-2 py-0.5 text-[12px] font-semibold">Lumi held back</span> : undefined}>
             <p>{d.uncertainty}</p>
             {comparison?.comparison && <p className="mt-2">{comparison.comparison.remainingUncertainty}</p>}
             {comparison?.guardrail && (
-              <div className="mt-3 rounded-2xl bg-[color-mix(in_srgb,var(--color-caution)_12%,transparent)] px-3 py-2.5 text-[14px] leading-snug">
-                <p className="font-semibold">Why Lumi held back</p>
-                <ul className="mt-1 list-disc pl-5">
-                  {comparison.guardrail.reasons.map((r) => (
-                    <li key={r}>{r}</li>
-                  ))}
-                </ul>
-              </div>
+              <ul className="mt-2 list-disc pl-5 text-[15px]">
+                {comparison.guardrail.reasons.map((r) => (
+                  <li key={r}>{r}</li>
+                ))}
+              </ul>
             )}
             <p className="mt-3 text-[12px] text-muted">Lumi rated its own confidence in this finding as {d.confidence}.</p>
-          </Section>
-
-          {comparison?.comparison && (
-            <div ref={compareRef}>
-              <Section icon={<Compare size={18} />} title="Before and after">
-                <ComparisonEvidence wt={wt} finding={finding} event={comparison} />
-              </Section>
-            </div>
-          )}
+          </Disclosure>
 
           {finding.history.length > 1 && (
-            <Section icon={<HistoryIcon size={18} />} title="Across your scans">
+            <Disclosure icon={<HistoryIcon size={17} />} label="Across your scans" summary={<span className="text-[13px] text-muted">{finding.history.length} scans</span>}>
               <History wt={wt} finding={finding} />
-            </Section>
+            </Disclosure>
           )}
         </div>
 
-        <div className="px-7 pt-6 text-center">
+        <div className="px-7 pt-5 text-center">
           <button type="button" onClick={() => setTrustOpen(true)} className="pressable inline-flex min-h-11 items-center gap-1.5 rounded-full px-3 text-[13px] font-semibold text-muted">
             <Info size={15} /> About these results
           </button>
-          <p className="text-[12px] leading-relaxed text-muted">AI observations from photos. Not an accessibility assessment or certification.</p>
         </div>
       </div>
 
@@ -244,11 +221,7 @@ export function FindingDetailScreen({
         <Button variant="secondary" size="md" className="h-12 flex-1" icon={<Scan size={17} />} onClick={onShowInPhoto} disabled={!photo}>
           Show in photo
         </Button>
-        <button
-          type="button"
-          onClick={onAsk}
-          className="pressable relative flex h-12 flex-1 items-center justify-center gap-2 rounded-full bg-primary text-[15px] font-semibold text-on-primary"
-        >
+        <button type="button" onClick={onAsk} className="pressable flex h-12 flex-1 items-center justify-center gap-2 rounded-full bg-primary text-[15px] font-semibold text-on-primary">
           <span aria-hidden>
             <Sidekick mood="ready" size={24} halo={false} float={false} />
           </span>
@@ -258,20 +231,6 @@ export function FindingDetailScreen({
 
       <TrustSheet open={trustOpen} onClose={() => setTrustOpen(false)} />
     </div>
-  );
-}
-
-function Section({ icon, title, children }: { icon: ReactNode; title: string; children: ReactNode }) {
-  return (
-    <section className="rounded-[24px] bg-surface p-4 shadow-[var(--shadow-soft)]" aria-label={title}>
-      <h2 className="flex items-center gap-2.5 text-[15px] font-semibold tracking-[-0.01em]">
-        <span className="grid size-8 place-items-center rounded-full bg-surface-2 text-muted" aria-hidden>
-          {icon}
-        </span>
-        {title}
-      </h2>
-      <div className="mt-3 text-[16px] leading-[1.55]">{children}</div>
-    </section>
   );
 }
 

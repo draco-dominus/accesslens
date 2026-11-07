@@ -1,3 +1,5 @@
+import { guardRequest } from "@/lib/request-guard.server";
+import { RequestTimer } from "@/lib/server-timing.server";
 import { errorResponse, fail, readForm } from "@/lib/api-errors.server";
 import { applyComparisonGuardrails } from "@/lib/comparison-guardrails";
 import { MAX_CONCERN_LENGTH, type CompareSuccess } from "@/lib/comparison-schema";
@@ -12,6 +14,9 @@ const DISCLAIMER =
   "better in these photos. It does not mean the space is accessible or meets any standard. Confirm on site.";
 
 export async function POST(request: Request) {
+  const timer = new RequestTimer();
+  const blocked = guardRequest(request, "compare");
+  if (blocked) return blocked;
   const form = await readForm(request);
   if (form instanceof Response) return form;
 
@@ -26,22 +31,19 @@ export async function POST(request: Request) {
   }
 
   try {
-    const [before, after] = await Promise.all([
-      readImageField(form, "before", "BEFORE"),
-      readImageField(form, "after", "AFTER"),
-    ]);
-    const { model, comparison: raw } = await compareImages(before, after, concern);
+    const [before, after] = await timer.measure("img", () =>
+      Promise.all([readImageField(form, "before", "BEFORE"), readImageField(form, "after", "AFTER")]),
+    );
+    const { model, comparison: raw, diag } = await compareImages(before, after, concern);
+    timer.ai(diag);
     const { comparison, guardrail } = applyComparisonGuardrails(raw);
-    if (guardrail) console.info("[compare] guardrail applied:", guardrail);
+    if (guardrail) console.info("[compare]", JSON.stringify({ model, guardrail: guardrail.modelStatus, reasons: guardrail.reasons.length }));
 
-    return Response.json({
-      ok: true,
-      model,
-      concern,
-      comparison,
-      guardrail,
-      disclaimer: DISCLAIMER,
-    } satisfies CompareSuccess);
+    return timer.finish(
+      "compare",
+      Response.json({ ok: true, model, concern, comparison, guardrail, disclaimer: DISCLAIMER } satisfies CompareSuccess),
+      diag,
+    );
   } catch (err) {
     return errorResponse(err, "compare");
   }

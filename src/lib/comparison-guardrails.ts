@@ -22,6 +22,11 @@ export function applyComparisonGuardrails(c: Comparison): { comparison: Comparis
   }
 
   if (c.status === "improved") {
+    // Declaring a fix needs a confident same-place match; "likely" isn't enough.
+    // (Observed: Gemma rated two different cities' staircases as "likely" the same place.)
+    if (c.sameLocation === "likely") {
+      reasons.push("The photos weren't confirmed to show the same place, so a fix can't be confirmed.");
+    }
     if (c.beforeBarrierVisible === "no") {
       reasons.push("The described barrier couldn't be found in the BEFORE photo, so a change can't be confirmed.");
     }
@@ -34,8 +39,14 @@ export function applyComparisonGuardrails(c: Comparison): { comparison: Comparis
     }
   }
 
-  if (c.status === "still_present" && c.afterAreaVisible === "no") {
-    reasons.push("The area where the barrier was isn't visible in the AFTER photo.");
+  if (c.status === "still_present") {
+    // "Still there" needs the barrier established in the BEFORE photo and its spot visible in AFTER.
+    if (c.beforeBarrierVisible === "no") {
+      reasons.push("The described barrier couldn't be found in the BEFORE photo, so I can't say it's still there.");
+    }
+    if (c.afterAreaVisible === "no") {
+      reasons.push("The area where the barrier was isn't visible in the AFTER photo.");
+    }
   }
 
   if (reasons.length > 0 && c.status !== "uncertain") {

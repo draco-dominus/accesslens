@@ -65,8 +65,8 @@ export function AccessLensApp() {
     go("scan");
   };
 
-  const onCaptured = (file: File) => {
-    const id = wt.scanFile(file);
+  const onCaptured = (file: File, lineUpScanId?: string) => {
+    const id = wt.scanFile(file, { lineUpScanId });
     setScanId(id);
     setFreshScanId(id);
     setFindingId(null);

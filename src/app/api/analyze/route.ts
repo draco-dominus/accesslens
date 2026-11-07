@@ -1,4 +1,5 @@
 import { guardRequest } from "@/lib/request-guard.server";
+import { RequestTimer } from "@/lib/server-timing.server";
 import { errorResponse, readForm } from "@/lib/api-errors.server";
 import { analyzeImage } from "@/lib/gemini.server";
 import { readImageField } from "@/lib/image.server";
@@ -12,6 +13,7 @@ const DISCLAIMER =
   "A photo cannot confirm that a space is accessible; measurements and an on-site review are needed.";
 
 export async function POST(request: Request) {
+  const timer = new RequestTimer();
   const blocked = guardRequest(request, "analyze");
   if (blocked) return blocked;
   const form = await readForm(request);
@@ -19,9 +21,10 @@ export async function POST(request: Request) {
 
   try {
     // Format is detected from file bytes, then re-encoded as a clean JPEG (HEIC supported).
-    const image = await readImageField(form, "image", "photo");
-    const { model, analysis } = await analyzeImage(image);
-    return Response.json({ ok: true, model, analysis, disclaimer: DISCLAIMER } satisfies AnalyzeSuccess);
+    const image = await timer.measure("img", () => readImageField(form, "image", "photo"));
+    const { model, analysis, diag } = await analyzeImage(image);
+    timer.ai(diag);
+    return timer.finish("analyze", Response.json({ ok: true, model, analysis, disclaimer: DISCLAIMER } satisfies AnalyzeSuccess), diag);
   } catch (err) {
     return errorResponse(err, "analyze");
   }

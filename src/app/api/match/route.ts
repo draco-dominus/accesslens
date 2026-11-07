@@ -1,4 +1,5 @@
 import { guardRequest } from "@/lib/request-guard.server";
+import { RequestTimer } from "@/lib/server-timing.server";
 import { errorResponse, fail, readForm } from "@/lib/api-errors.server";
 import { matchScene } from "@/lib/gemini.server";
 import { readImageField } from "@/lib/image.server";
@@ -20,6 +21,7 @@ const CANDIDATE_MAX_EDGE = 1024;
  * It never changes a finding's status: improvements are only judged by /api/compare.
  */
 export async function POST(request: Request) {
+  const timer = new RequestTimer();
   const blocked = guardRequest(request, "match");
   if (blocked) return blocked;
   const form = await readForm(request);
@@ -34,17 +36,20 @@ export async function POST(request: Request) {
   }
 
   try {
-    const [newImage, ...candidateImages] = await Promise.all([
-      readImageField(form, "image", "new scan"),
-      ...ctx.candidates.map((c) =>
-        readImageField(form, `candidate:${c.scanId}`, "earlier scan", { maxEdge: CANDIDATE_MAX_EDGE }),
-      ),
-    ]);
-    const { model, output } = await matchScene(newImage, candidateImages, ctx);
+    const [newImage, ...candidateImages] = await timer.measure("img", () =>
+      Promise.all([
+        readImageField(form, "image", "new scan"),
+        ...ctx.candidates.map((c) =>
+          readImageField(form, `candidate:${c.scanId}`, "earlier scan", { maxEdge: CANDIDATE_MAX_EDGE }),
+        ),
+      ]),
+    );
+    const { model, output, diag } = await matchScene(newImage, candidateImages, ctx);
+    timer.ai(diag);
     const result = resolveMatch(ctx, output, model);
     // Counts only: no scan or session identifiers in logs.
     console.info("[match]", JSON.stringify({ model, candidates: result.candidates.map((c) => c.sameArea), duplicates: result.duplicates.length }));
-    return Response.json(result);
+    return timer.finish("match", Response.json(result), diag);
   } catch (err) {
     return errorResponse(err, "match");
   }

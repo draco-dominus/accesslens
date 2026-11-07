@@ -1,7 +1,16 @@
 import type { Analysis } from "../analysis-schema";
 import type { CompareSuccess, ComparisonStatus } from "../comparison-schema";
 import { MAX_MATCH_CANDIDATES, type MatchSuccess } from "../match-schema";
-import { isOpen, type FindingStatus, type Scan, type ScanEvent, type Session, type TrackedFinding } from "./types";
+import {
+  isOpen,
+  type FindingStatus,
+  type Scan,
+  type ScanEvent,
+  type ScanRelation,
+  type ScanStage,
+  type Session,
+  type TrackedFinding,
+} from "./types";
 
 /**
  * Pure walkthrough logic. Every function returns a new Session; nothing here calls the network.
@@ -31,9 +40,11 @@ export function createSession(id: string, now: number): Session {
   return { id, startedAt: now, finishedAt: null, scans: [], findings: [], areaCount: 0 };
 }
 
-export function addScan(s: Session, scanId: string, now: number): Session {
+export function addScan(s: Session, scanId: string, now: number, opts: { lineUpScanId?: string } = {}): Session {
   const scan: Scan = {
     id: scanId,
+    lineUpScanId: opts.lineUpScanId,
+    stages: [],
     number: s.scans.length + 1,
     createdAt: now,
     step: "queued",
@@ -53,6 +64,21 @@ function updateScan(s: Session, scanId: string, fn: (scan: Scan) => Scan): Sessi
 
 export function setStep(s: Session, scanId: string, step: Scan["step"], error?: string, errorRetryable?: boolean): Session {
   return updateScan(s, scanId, (sc) => ({ ...sc, step, error, errorRetryable: step === "error" ? errorRetryable : undefined }));
+}
+
+/** Insert or update one processing stage (matched by id). */
+export function setStage(s: Session, scanId: string, stage: Pick<ScanStage, "id"> & Partial<ScanStage>): Session {
+  return updateScan(s, scanId, (sc) => {
+    const stages = sc.stages ?? [];
+    const i = stages.findIndex((x) => x.id === stage.id);
+    const merged = { ...(i >= 0 ? stages[i] : { label: stage.id, state: "active" as const, startedAt: stage.startedAt ?? 0 }), ...stage } as ScanStage;
+    return { ...sc, stages: i >= 0 ? stages.map((x, j) => (j === i ? merged : x)) : [...stages, merged] };
+  });
+}
+
+/** Drop previous stages before a retry, so timings describe the attempt the user is waiting on. */
+export function clearStages(s: Session, scanId: string): Session {
+  return updateScan(s, scanId, (sc) => ({ ...sc, stages: [], doneAt: undefined }));
 }
 
 export function setAnalysis(s: Session, scanId: string, analysis: Analysis, model: string): Session {
@@ -220,6 +246,12 @@ export function integrateScan(
     matchFailed: boolean;
     comparisons: CompareOutcome[];
     newFindingIds: string[]; // pre-generated IDs, one per analysis finding
+    /**
+     * The user lined this photo up with this earlier scan, so its open findings were compared directly
+     * (no scene-match request). It is NOT treated as confirmation: the comparisons decide whether it's the
+     * same spot, and "different place" leaves the earlier findings untouched.
+     */
+    lineUpScanId?: string;
   },
   now: number,
 ): Session {
@@ -227,15 +259,27 @@ export function integrateScan(
   if (!scan?.analysis) return s;
   const analysis = scan.analysis;
   const events: ScanEvent[] = [];
+  const lineUp = input.lineUpScanId && getScan(s, input.lineUpScanId) ? input.lineUpScanId : undefined;
 
   // 1. Scene relations and area.
-  const relations = (input.match?.candidates ?? []).map((c) => ({
-    scanId: c.scanId,
-    sameArea: c.sameArea,
-    decidedBy: "auto" as const,
-    evidence: c.evidence,
-  }));
+  const relations: ScanRelation[] = (input.match?.candidates ?? [])
+    .filter((c) => c.scanId !== lineUp)
+    .map((c) => ({ scanId: c.scanId, sameArea: c.sameArea, decidedBy: "auto" as const, evidence: c.evidence }));
+  if (lineUp) {
+    const verdicts = input.comparisons
+      .filter((c) => c.referenceScanId === lineUp && "result" in c)
+      .map((c) => ("result" in c ? c.result.comparison.sameLocation : "unclear"));
+    const sameArea = verdicts.includes("yes") ? "yes" : verdicts.includes("likely") ? "likely" : verdicts.includes("no") ? "no" : "unclear";
+    relations.push({ scanId: lineUp, sameArea, decidedBy: "lineup", evidence: "You lined this photo up with this scan; the comparison checked the fixed features." });
+    if (sameArea === "yes" || sameArea === "likely") {
+      events.push({ kind: "revisit", scanId: lineUp, sameArea, decidedBy: "lineup" });
+    } else if (verdicts.length) {
+      const n = getScan(s, lineUp)!.number;
+      events.push({ kind: "notice", message: `This doesn't look like the same spot as scan ${n}, so I left its findings as they were.` });
+    }
+  }
   for (const r of relations) {
+    if (r.decidedBy !== "auto") continue;
     // Only claim a revisit when the scene match was confident, or a "likely" match was backed up by
     // at least one comparison that also saw the same place.
     const confirmedByComparison = input.comparisons.some((c) => c.referenceScanId === r.scanId && !differentPlace(c) && "result" in c);
@@ -245,7 +289,7 @@ export function integrateScan(
   }
   const pendingRevisit = input.matchFailed
     ? input.candidateScanIds
-    : relations.filter((r) => r.sameArea === "unclear").map((r) => r.scanId);
+    : relations.filter((r) => r.decidedBy === "auto" && r.sameArea === "unclear").map((r) => r.scanId);
   if (input.matchFailed && pendingRevisit.length) {
     events.push({ kind: "notice", message: "I couldn't automatically check whether this is an area we've already scanned." });
   }
@@ -305,6 +349,7 @@ export function integrateScan(
     pendingRevisit,
     comparedWith: [...new Set(input.comparisons.map((c) => c.referenceScanId))],
     events,
+    doneAt: now,
   }));
   return { ...next, areaCount: areaCount(next.scans) };
 }

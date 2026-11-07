@@ -50,7 +50,7 @@ export type RunnerOptions<T> = {
 
 export type Failure = { model: string; attempt: number; kind: FailureKind; status?: number };
 export type RunnerResult<T> =
-  | { ok: true; model: string; value: T; failures: Failure[] }
+  | { ok: true; model: string; value: T; failures: Failure[]; attempts: number }
   | { ok: false; failures: Failure[]; skipped: string[] };
 
 const BACKOFF_BASE_MS = 500;
@@ -88,14 +88,17 @@ export async function runWithFallback<T>(o: RunnerOptions<T>): Promise<RunnerRes
       const attemptStart = now();
       try {
         const value = await o.attempt(model, Math.min(o.attemptTimeoutMs, remaining));
-        return { ok: true, model, value, failures };
+        return { ok: true, model, value, failures, attempts: failures.length + 1 };
       } catch (err) {
         const c = o.classify(err);
         if (c === "fatal") throw err;
         failures.push({ model, attempt, kind: c.kind, status: c.status });
         log({ type: "attempt_failed", label: o.label, model, attempt, kind: c.kind, status: c.status, elapsedMs: now() - attemptStart, detail: err });
 
-        if (c.kind === "timeout") break; // don't wait on a hanging model twice
+        // Don't wait on a hanging model twice when another model can take over. With no fallback left
+        // (none configured, or it's cooling down), one more try beats failing outright.
+        if (c.kind === "timeout" && (laterModels > 0 || attempt >= 2)) break;
+        if (c.kind === "timeout") continue;
         if (c.kind === "quota_exhausted") {
           const ms = c.retryAfterMs ?? 60_000;
           o.cooldowns.set(model, now() + ms);

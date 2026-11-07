@@ -1,4 +1,5 @@
 import { guardRequest } from "@/lib/request-guard.server";
+import { RequestTimer } from "@/lib/server-timing.server";
 import { errorResponse, readForm } from "@/lib/api-errors.server";
 import { readImageField } from "@/lib/image.server";
 
@@ -10,14 +11,15 @@ export const runtime = "nodejs";
  * same orientation, same size, metadata (incl. GPS) stripped. No AI call, no API key involved.
  */
 export async function POST(request: Request) {
+  const timer = new RequestTimer();
   const blocked = guardRequest(request, "preview");
   if (blocked) return blocked;
   const form = await readForm(request);
   if (form instanceof Response) return form;
 
   try {
-    const image = await readImageField(form, "image", "photo");
-    return new Response(new Uint8Array(image.data), {
+    const image = await timer.measure("img", () => readImageField(form, "image", "photo"));
+    return timer.finish("preview", new Response(new Uint8Array(image.data), {
       headers: {
         "Content-Type": image.mimeType,
         "Cache-Control": "no-store",
@@ -25,7 +27,7 @@ export async function POST(request: Request) {
         "X-Image-Height": String(image.height),
         "X-Source-Format": image.sourceFormat,
       },
-    });
+    }));
   } catch (err) {
     return errorResponse(err, "preview");
   }

@@ -3,6 +3,7 @@
 import { useCallback, useRef, useState, useSyncExternalStore } from "react";
 import * as api from "@/lib/session/api";
 import * as E from "@/lib/session/engine";
+import { runScanPipeline } from "@/lib/session/pipeline";
 import { loadSession, saveSession } from "@/lib/session/storage";
 import type { Session } from "@/lib/session/types";
 
@@ -131,7 +132,7 @@ export function useWalkthrough() {
       const after = blobOf(newScanId);
       if (!finding || !before || !after) return { findingId, referenceScanId, error: "Photo no longer available." };
       try {
-        const result = await api.compare(before, after, E.concernText(finding), run.controller.signal);
+        const { result } = await api.compare(before, after, E.concernText(finding), run.controller.signal);
         return { findingId, referenceScanId, result };
       } catch (err) {
         if (api.isAbort(err)) throw err;
@@ -150,104 +151,109 @@ export function useWalkthrough() {
     [alive, update],
   );
 
-  /** Prepare (if needed), analyze, match and compare one scan, then fold it into the session. */
-  const processScan = useCallback(
-    async (run: Run, scanId: string) => {
-      const signal = run.controller.signal;
+  /** In-flight photo preparations, started as soon as a photo is taken (outside the queue). */
+  const preparing = useRef(new Map<string, Promise<void>>());
 
-      if (!blobOf(scanId)) {
+  /**
+   * Prepare a photo (browser re-encode, or /api/preview for formats the browser can't decode) and
+   * store its media. Doesn't touch session logic, so it can run while earlier scans are still processing.
+   */
+  const prepare = useCallback(
+    (run: Run, scanId: string): Promise<void> => {
+      const existing = preparing.current.get(scanId);
+      if (existing) return existing;
+      const task = (async () => {
         const file = sources.current.get(scanId);
-        if (!file) return update(run, (s) => E.setStep(s, scanId, "error", "This photo is no longer available. Please scan again.", false));
-        update(run, (s) => E.setStep(s, scanId, "preparing"));
-        let media: ScanMedia;
-        try {
-          const prepared = await api.prepareImage(file, signal);
-          // 640px keeps before/after views legible after the full image is released.
-          const thumb = await api.makeThumbnail(prepared.blob, 640).catch(() => null);
-          media = {
-            imageBlob: prepared.blob,
-            imageUrl: URL.createObjectURL(prepared.blob),
-            thumbUrl: thumb ? URL.createObjectURL(thumb) : undefined,
-          };
-        } catch (err) {
-          return fail(run, scanId, err, "Couldn't prepare this photo.");
-        }
+        if (!file) throw new api.ApiClientError("GONE", "This photo is no longer available. Please scan again.", 0);
+        const startedAt = Date.now();
+        update(run, (s) => E.setStage(s, scanId, { id: "prepare", label: "Getting your photo ready", state: "active", startedAt }));
+        const prepared = await api.prepareImage(file, run.controller.signal);
+        // 640px keeps before/after views legible after the full image is released.
+        const thumb = await api.makeThumbnail(prepared.blob, 640).catch(() => null);
+        const media: ScanMedia = {
+          imageBlob: prepared.blob,
+          imageUrl: URL.createObjectURL(prepared.blob),
+          thumbUrl: thumb ? URL.createObjectURL(thumb) : undefined,
+        };
         if (!alive(run)) return revokeMedia({ [scanId]: media }); // session ended meanwhile
         store.set((st) => ({ ...st, media: { ...st.media, [scanId]: media } }));
         sources.current.delete(scanId);
+        update(run, (s) =>
+          E.setStage(s, scanId, {
+            id: "prepare",
+            state: "done",
+            endedAt: Date.now(),
+            timing: prepared.timing,
+            note: prepared.via === "browser" ? "Prepared on this device" : "Converted on the server",
+          }),
+        );
+      })();
+      // Kept until processScan consumes it, so an early failure isn't re-requested a second time.
+      preparing.current.set(scanId, task);
+      return task;
+    },
+    [store, update, alive],
+  );
+
+  /** Analyze, check earlier areas and compare (see lib/session/pipeline.ts), then fold the result into the session. */
+  const processScan = useCallback(
+    async (run: Run, scanId: string) => {
+      if (!blobOf(scanId)) {
+        update(run, (s) => E.setStep(s, scanId, "preparing"));
+        try {
+          await prepare(run, scanId);
+        } catch (err) {
+          update(run, (s) => E.setStage(s, scanId, { id: "prepare", state: api.isAbort(err) ? "skipped" : "failed", endedAt: Date.now() }));
+          return fail(run, scanId, err, "Couldn't prepare this photo.");
+        } finally {
+          preparing.current.delete(scanId); // a later "Try again" prepares afresh
+        }
       }
-      const blob = blobOf(scanId)!;
+      const blob = blobOf(scanId);
+      if (!alive(run)) return;
+      if (!blob) return update(run, (s) => E.setStep(s, scanId, "error", "This photo is no longer available. Please scan again.", false));
 
       update(run, (s) => E.setStep(s, scanId, "analyzing"));
-      let analysis, model;
+      const lineUpScanId = store.get().session?.scans.find((x) => x.id === scanId)?.lineUpScanId;
+      let result;
       try {
-        ({ analysis, model } = await api.analyze(blob, signal));
+        result = await runScanPipeline(
+          {
+            session: () => store.get().session!,
+            blobOf,
+            analyze: (b, signal) => api.analyze(b, signal),
+            match: (b, ctx, images, signal) => api.matchScene(b, ctx, images, signal),
+            compare: (before, after, concern, signal) => api.compare(before, after, concern, signal),
+            stage: (u) => update(run, (s) => E.setStage(s, scanId, u)),
+          },
+          scanId,
+          blob,
+          { signal: run.controller.signal, lineUpScanId },
+        );
       } catch (err) {
         return fail(run, scanId, err, "Analysis failed.");
       }
       if (!alive(run)) return;
-      update(run, (s) => E.setAnalysis(s, scanId, analysis, model));
 
-      const session = store.get().session!;
-      const candidates = analysis.imageUsable ? E.selectCandidates(session, scanId, (id) => Boolean(blobOf(id))) : [];
-      let match = null;
-      let matchFailed = false;
-      let comparisons: E.CompareOutcome[] = [];
-      if (candidates.length) {
-        update(run, (s) => E.setStep(s, scanId, "matching"));
-        try {
-          match = await api.matchScene(
-            blob,
-            {
-              newFindings: analysis.findings.map(({ barrierType, title, locationInImage }) => ({ barrierType, title, locationInImage })),
-              candidates: candidates.map((c) => ({
-                scanId: c.scanId,
-                findings: c.findings.map((f) => ({
-                  id: f.id,
-                  barrierType: f.details.barrierType,
-                  title: f.details.title,
-                  locationInImage: f.details.locationInImage,
-                })),
-              })),
-            },
-            new Map(candidates.map((c) => [c.scanId, blobOf(c.scanId)!])),
-            signal,
-          );
-        } catch (err) {
-          if (api.isAbort(err)) return;
-          matchFailed = true; // the engine asks the user instead of guessing
-        }
-        if (!alive(run)) return;
-        const sameArea = (match?.candidates ?? []).filter((c) => c.sameArea === "yes" || c.sameArea === "likely");
-        const targets = E.comparisonTargets(store.get().session!, sameArea.map((c) => c.scanId));
-        if (targets.length) {
-          update(run, (s) => E.setStep(s, scanId, "comparing"));
-          try {
-            comparisons = await Promise.all(targets.map((t) => compareFinding(run, t.finding.id, t.referenceScanId, scanId)));
-          } catch {
-            return; // aborted
-          }
-        }
-      }
-      if (!alive(run)) return;
-
-      update(run, (s) =>
-        E.integrateScan(
-          s,
+      update(run, (s) => {
+        const withAnalysis = E.setAnalysis(s, scanId, result.analysis, result.model);
+        return E.integrateScan(
+          withAnalysis,
           scanId,
           {
-            candidateScanIds: candidates.map((c) => c.scanId),
-            match,
-            matchFailed,
-            comparisons,
-            newFindingIds: analysis.findings.map(() => newId("f")),
+            candidateScanIds: result.candidateScanIds,
+            match: result.match,
+            matchFailed: result.matchFailed,
+            comparisons: result.comparisons,
+            newFindingIds: result.analysis.findings.map(() => newId("f")),
+            lineUpScanId: result.lineUpScanId,
           },
           Date.now(),
-        ),
-      );
+        );
+      });
       pruneImages();
     },
-    [store, blobOf, update, alive, fail, compareFinding, pruneImages],
+    [store, blobOf, prepare, update, alive, fail, pruneImages],
   );
 
   /** Abort everything belonging to the current session and clear its media. */
@@ -255,6 +261,7 @@ export function useWalkthrough() {
     runRef.current?.controller.abort();
     runRef.current = null;
     sources.current.clear();
+    preparing.current.clear();
     revokeMedia(store.get().media);
   }, [store]);
 
@@ -268,17 +275,24 @@ export function useWalkthrough() {
     store.set(() => EMPTY);
   }, [store, teardown]);
 
+  /**
+   * Start a scan. `lineUpScanId`: the earlier scan the user lined the photo up with in the camera
+   * (its open findings are compared directly, skipping the scene-match request).
+   */
   const scanFile = useCallback(
-    (file: File) => {
+    (file: File, opts: { lineUpScanId?: string } = {}) => {
       if (!store.get().session) start();
       const run = currentRun()!;
       const scanId = newId("s");
       sources.current.set(scanId, file);
-      update(run, (s) => E.addScan(s, scanId, Date.now()));
+      const lineUpScanId = opts.lineUpScanId && store.get().session?.scans.some((x) => x.id === opts.lineUpScanId) ? opts.lineUpScanId : undefined;
+      update(run, (s) => E.addScan(s, scanId, Date.now(), { lineUpScanId }));
+      // Prepare right away (overlaps with earlier scans still in the queue); errors surface in processScan.
+      prepare(run, scanId).catch(() => {});
       enqueue(run, () => processScan(run, scanId));
       return scanId;
     },
-    [store, start, currentRun, update, enqueue, processScan],
+    [store, start, currentRun, update, prepare, enqueue, processScan],
   );
 
   /** Whether "Try again" can work for this scan (we still have its photo, and the error isn't permanent). */
@@ -295,7 +309,7 @@ export function useWalkthrough() {
       const run = currentRun();
       const scan = store.get().session?.scans.find((s) => s.id === scanId);
       if (!run || scan?.step !== "error") return; // ignore double taps / non-failed scans
-      update(run, (s) => E.setStep(s, scanId, "queued"));
+      update(run, (s) => E.setStep(E.clearStages(s, scanId), scanId, "queued"));
       enqueue(run, () => processScan(run, scanId));
     },
     [store, currentRun, update, enqueue, processScan],

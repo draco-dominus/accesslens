@@ -2,8 +2,9 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { useWalkthrough } from "@/hooks/useWalkthrough";
-import { findingsForScan, lumiMessagesForScan, scanMood, stepLabel } from "@/lib/session/lumi";
+import { findingsForScan, lumiMessagesForScan, scanMood } from "@/lib/session/lumi";
 import { isOpen, type FindingEvent, type Scan, type TrackedFinding } from "@/lib/session/types";
+import { activeStageSummary, StageChecklist, TimingBreakdown, useTicker } from "../lumi/ScanProgress";
 import { Sidekick, type LumiMood } from "../lumi/Sidekick";
 import { BeforeAfter } from "../ui/BeforeAfter";
 import { Chat, ChevronDown, ChevronRight, Rescan } from "../ui/Icons";
@@ -55,6 +56,9 @@ export function DiscoverScreen({
   const manualOptions = scan.step === "done" && !checking && wt.hasImage(scan.id) ? wt.manualRevisitOptions(scan.id).filter((o) => !scan.pendingRevisit.includes(o.id)) : [];
 
   const [expanded, setExpanded] = useState(Boolean(selectedFindingId));
+  const tick = useTicker(processing, 1000);
+  // Developer timing breakdown: open the app with ?timing=1 (this screen only renders client-side).
+  const [showTiming] = useState(() => typeof window !== "undefined" && new URLSearchParams(window.location.search).has("timing"));
   const cardRefs = useRef<Record<string, HTMLLIElement | null>>({});
 
   // Open the sheet once results arrive for a fresh scan, and when arriving with a finding selected.
@@ -99,8 +103,12 @@ export function DiscoverScreen({
         <div className="absolute inset-x-0 top-[calc(var(--safe-top)+58px)] z-10 flex justify-center px-4">
           <SidekickCapsule
             mood="thinking"
-            title={checking ? "Re-checking the earlier finding…" : `${stepLabel(scan.step)}…`}
-            detail={`Scan ${scan.number}. You can scan again while I work.`}
+            title={checking ? "Re-checking the earlier finding…" : `${activeStageSummary(scan).title}…`}
+            detail={
+              checking
+                ? undefined
+                : `${activeStageSummary(scan).detail ? `${activeStageSummary(scan).detail}. ` : ""}${Math.max(0, Math.round((tick - scan.createdAt) / 1000))}s so far · you can keep scanning.`
+            }
           />
         </div>
       )}
@@ -120,7 +128,12 @@ export function DiscoverScreen({
               <div className="flex items-start gap-3">
                 <Sidekick mood={processing ? "thinking" : mood} size={52} halo={activeMood(processing ? "thinking" : mood)} />
                 <div className="min-w-0 flex-1 pt-0.5">
-                  {processing && <p className="text-thinking text-[17px] leading-snug font-semibold tracking-[-0.015em]">{stepLabel(scan.step)}…</p>}
+                  {processing && (
+                    <>
+                      <p className="text-[17px] leading-snug font-semibold tracking-[-0.015em]">Working on scan {scan.number}</p>
+                      <StageChecklist scan={scan} />
+                    </>
+                  )}
                   {scan.step === "error" && (
                     <>
                       <p className="text-[17px] leading-snug font-semibold tracking-[-0.015em]">I couldn’t finish this scan.</p>
@@ -200,6 +213,8 @@ export function DiscoverScreen({
             </ul>
 
             {manualOptions.length > 0 && <ManualRevisit wt={wt} scanId={scan.id} options={manualOptions} />}
+
+            {showTiming && <TimingBreakdown scan={scan} />}
 
             {scan.step === "done" && otherOpen.length > 0 && (
               <button

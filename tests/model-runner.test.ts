@@ -92,6 +92,27 @@ describe("model runner: retry policy", () => {
     assert.equal(h.calls.filter((c) => c.model === "primary").length, 1);
   });
 
+  it("a timeout with no fallback available retries the same model once (instead of failing outright)", async () => {
+    const h = harness({ only: [{ hang: true }, { ms: 4_000, ok: true }] });
+    const r = await h.run(["only"]);
+    assert.equal(r.ok && r.model, "only");
+    assert.equal(h.calls.length, 2);
+  });
+
+  it("…but never more than one retry after timeouts", async () => {
+    const h = harness({ only: [{ hang: true }] });
+    const r = await h.run(["only"]);
+    assert.equal(r.ok, false);
+    assert.equal(h.calls.length, 2);
+  });
+
+  it("a fallback that is cooling down counts as unavailable, so the primary gets its one retry", async () => {
+    const h = harness({ primary: [{ hang: true }, { ms: 3_000, ok: true }], fallback: [{ ms: 1, ok: true }] }, new Map([["fallback", 10 ** 12]]));
+    const r = await h.run(["primary", "fallback"]);
+    assert.equal(r.ok && r.model, "primary");
+    assert.deepEqual(h.calls.map((c) => c.model), ["primary", "primary"]);
+  });
+
   it("success on the first try makes exactly one request", async () => {
     const h = harness({ primary: [{ ms: 6_000, ok: true }], fallback: [{ ms: 1, ok: true }] });
     const r = await h.run(["primary", "fallback"]);

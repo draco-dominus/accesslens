@@ -36,12 +36,32 @@ export type FindingEvent = {
   model?: string;
 };
 
-/** How a scan relates to an earlier scan. */
+/**
+ * How a scan relates to an earlier scan. "lineup": the user lined the photo up with that scan in the
+ * camera; the comparisons still decide whether it's really the same spot.
+ */
+export type RelationSource = "auto" | "user" | "lineup";
 export type ScanRelation = {
   scanId: string; // the earlier scan
   sameArea: SameArea;
-  decidedBy: "auto" | "user";
+  decidedBy: RelationSource;
   evidence: string;
+};
+
+/**
+ * One real processing stage of a scan, for truthful progress and timing diagnostics.
+ * Durations only; no image data, prompts or identifiers beyond this session's own IDs.
+ */
+export type StageState = "active" | "done" | "failed" | "skipped";
+export type ScanStage = {
+  id: string; // "prepare" | "analyze" | "match" | "dedupe" | `compare:${findingId}`
+  label: string;
+  state: StageState;
+  startedAt: number;
+  endedAt?: number;
+  /** Network round trip and the server's own breakdown, when the stage was an API call. */
+  timing?: { clientMs: number; serverTotalMs?: number; imageMs?: number; aiMs?: number; ai?: string };
+  note?: string;
 };
 
 /** What happened during a scan, in order. Lumi's messages are generated from these. */
@@ -49,7 +69,7 @@ export type ScanEvent =
   | { kind: "new_finding"; findingId: string }
   | { kind: "seen_again"; findingId: string }
   | { kind: "status_change"; findingId: string; from: FindingStatus; to: FindingStatus; referenceScanId: string }
-  | { kind: "revisit"; scanId: string; sameArea: SameArea; decidedBy: "auto" | "user" }
+  | { kind: "revisit"; scanId: string; sameArea: SameArea; decidedBy: RelationSource }
   | { kind: "revisit_question"; scanIds: string[] }
   | { kind: "revisit_declined"; scanId: string }
   | { kind: "no_findings" }
@@ -64,6 +84,12 @@ export type Scan = {
   error?: string;
   /** False when retrying can't help (e.g. unsupported or oversized file). */
   errorRetryable?: boolean;
+  /** Earlier scan the user lined this photo up with in the camera, if any. */
+  lineUpScanId?: string;
+  /** Real processing stages, in start order. */
+  stages?: ScanStage[];
+  /** When processing finished (createdAt → doneAt is the user-visible wait). */
+  doneAt?: number;
   areaId: string | null;
   analysis: Analysis | null;
   analysisModel?: string;

@@ -19,7 +19,7 @@ const cameraSupported = () =>
  * Live viewfinder when the browser allows it (HTTPS or localhost); otherwise the native camera / photo
  * picker. Every photo goes through the real pipeline (HEIC conversion → analyze → match → compare).
  */
-export function ScanScreen({ wt, onCapture }: { wt: Walkthrough; onCapture: (file: File) => void }) {
+export function ScanScreen({ wt, onCapture }: { wt: Walkthrough; onCapture: (file: File, lineUpScanId?: string) => void }) {
   const video = useRef<HTMLVideoElement>(null);
   const takeInput = useRef<HTMLInputElement>(null);
   const pickInput = useRef<HTMLInputElement>(null);
@@ -74,7 +74,7 @@ export function ScanScreen({ wt, onCapture }: { wt: Walkthrough; onCapture: (fil
     canvas.getContext("2d")!.drawImage(v, 0, 0);
     setFlash((n) => n + 1);
     canvas.toBlob(
-      (blob) => blob && onCapture(new File([blob], `scan-${Date.now()}.jpg`, { type: "image/jpeg" })),
+      (blob) => blob && onCapture(new File([blob], `scan-${Date.now()}.jpg`, { type: "image/jpeg" }), ghost?.scan.id),
       "image/jpeg",
       0.92,
     );
@@ -83,7 +83,7 @@ export function ScanScreen({ wt, onCapture }: { wt: Walkthrough; onCapture: (fil
   const onPicked = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = "";
-    if (file) onCapture(file);
+    if (file) onCapture(file, ghost?.scan.id);
   };
 
   const live = cam === "live";
@@ -96,7 +96,7 @@ export function ScanScreen({ wt, onCapture }: { wt: Walkthrough; onCapture: (fil
         ? "Scan anywhere you like"
         : "Let’s look at this space";
   const detail = ghost
-    ? "Stand where you took that photo and match the outline, so I can compare fairly."
+    ? "Stand where you took that photo and match the outline. I’ll re-check its findings directly."
     : busy
       ? "You can keep scanning. I’ll get to this one next."
       : openCount

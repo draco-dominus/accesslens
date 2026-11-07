@@ -30,11 +30,13 @@ const COMPARE_MODEL = process.env.GEMINI_COMPARE_MODEL || "gemini-3.5-flash-lite
 const COMPARE_FALLBACK_MODEL = COMPARE_MODEL === PRIMARY_MODEL ? FALLBACK_MODEL : PRIMARY_MODEL;
 
 const ATTEMPTS_PER_MODEL = 3;
-// Normal responses take 5–15s. Gemma occasionally hangs, so cap each attempt and the whole call.
+// Measured successful responses: Gemma analyze 5.6–13.8s, flash-lite match/compare 2.3–14.9s.
+// Gemma occasionally hangs; a hang used to be held for 35s before falling back (the main cause of
+// ~1 minute rescans). 25s still leaves ~10s headroom over the slowest successful call we've seen.
 // TOTAL_BUDGET_MS must stay below the routes' maxDuration (120s) with room for image processing.
 // FALLBACK_RESERVE_MS guarantees the fallback one full attempt: the primary's retries stop at
-// TOTAL_BUDGET_MS - FALLBACK_RESERVE_MS (65s), so they can't starve the fallback.
-const ATTEMPT_TIMEOUT_MS = 35_000;
+// TOTAL_BUDGET_MS - FALLBACK_RESERVE_MS (75s), so they can't starve the fallback.
+const ATTEMPT_TIMEOUT_MS = 25_000;
 const TOTAL_BUDGET_MS = 100_000;
 const FALLBACK_RESERVE_MS = ATTEMPT_TIMEOUT_MS;
 const MIN_ATTEMPT_MS = 10_000;
@@ -239,12 +241,17 @@ type Task<T> = {
  */
 const modelCooldownUntil = new Map<string, number>();
 
+/** Timing/diagnostics for one AI call. Safe to log and to send to the client (no content, no IDs). */
+export type AiDiagnostics = { model: string; aiMs: number; attempts: number; fallbackUsed: boolean; failures: string[] };
+
 /** Call the primary model (with bounded retries), then the fallback, until a Zod-valid result is returned. */
-async function generateValidated<T>(task: Task<T>): Promise<{ model: string; result: T }> {
+async function generateValidated<T>(task: Task<T>): Promise<{ model: string; result: T; diag: AiDiagnostics }> {
   const client = getClient(); // throws CONFIG before any attempt if the key is missing
+  const started = Date.now();
+  const primary = task.primaryModel ?? PRIMARY_MODEL;
   const outcome = await runWithFallback<T>({
     label: task.label,
-    models: [task.primaryModel ?? PRIMARY_MODEL, task.fallbackModel ?? FALLBACK_MODEL],
+    models: [primary, task.fallbackModel ?? FALLBACK_MODEL],
     budgetMs: TOTAL_BUDGET_MS,
     attemptTimeoutMs: ATTEMPT_TIMEOUT_MS,
     minAttemptMs: MIN_ATTEMPT_MS,
@@ -278,26 +285,33 @@ async function generateValidated<T>(task: Task<T>): Promise<{ model: string; res
     },
   });
   if (!outcome.ok) throw finalError(outcome.failures, outcome.skipped);
-  return { model: outcome.model, result: outcome.value };
+  const diag: AiDiagnostics = {
+    model: outcome.model,
+    aiMs: Date.now() - started,
+    attempts: outcome.attempts,
+    fallbackUsed: outcome.model !== primary,
+    failures: outcome.failures.map((f) => f.kind),
+  };
+  return { model: outcome.model, result: outcome.value, diag };
 }
 
-export async function analyzeImage(image: NormalizedImage): Promise<{ model: string; analysis: Analysis }> {
-  const { model, result } = await generateValidated({
+export async function analyzeImage(image: NormalizedImage): Promise<{ model: string; analysis: Analysis; diag: AiDiagnostics }> {
+  const { model, result, diag } = await generateValidated({
     label: "analyze",
     schema: AnalysisSchema,
     jsonSchema: ANALYSIS_JSON_SCHEMA,
     systemInstruction: ANALYZE_SYSTEM_INSTRUCTION,
     parts: [imagePart(image), { text: ANALYZE_PROMPT }],
   });
-  return { model, analysis: result };
+  return { model, analysis: result, diag };
 }
 
 export async function compareImages(
   before: NormalizedImage,
   after: NormalizedImage,
   concern: string,
-): Promise<{ model: string; comparison: Comparison }> {
-  const { model, result } = await generateValidated({
+): Promise<{ model: string; comparison: Comparison; diag: AiDiagnostics }> {
+  const { model, result, diag } = await generateValidated({
     label: "compare",
     schema: ComparisonSchema,
     jsonSchema: COMPARISON_JSON_SCHEMA,
@@ -317,7 +331,7 @@ export async function compareImages(
       },
     ],
   });
-  return { model, comparison: result };
+  return { model, comparison: result, diag };
 }
 
 /** Clean one line of user/model-provided text before embedding it in a prompt. */
@@ -329,7 +343,7 @@ export async function matchScene(
   newImage: NormalizedImage,
   candidateImages: NormalizedImage[],
   ctx: MatchRequestContext,
-): Promise<{ model: string; output: MatchModelOutput }> {
+): Promise<{ model: string; output: MatchModelOutput; diag: AiDiagnostics }> {
   const parts: Part[] = [{ text: "NEW photo:" }, imagePart(newImage)];
   const newList = ctx.newFindings.length
     ? ctx.newFindings
@@ -352,7 +366,7 @@ export async function matchScene(
     text: `Return JSON with one candidates entry for each of C1..C${ctx.candidates.length} and one duplicates entry for each new finding.`,
   });
 
-  const { model, result } = await generateValidated({
+  const { model, result, diag } = await generateValidated({
     label: "match",
     schema: MatchModelSchema,
     jsonSchema: MATCH_JSON_SCHEMA,
@@ -361,5 +375,5 @@ export async function matchScene(
     fallbackModel: COMPARE_FALLBACK_MODEL,
     parts,
   });
-  return { model, output: result };
+  return { model, output: result, diag };
 }

@@ -59,6 +59,10 @@ function eventText(s: Session, scan: Scan, e: ScanEvent, isFirstFindingOfSession
       }
     }
     case "revisit":
+      if (e.decidedBy === "lineup")
+        return e.sameArea === "yes"
+          ? `You lined this up with ${scanLabel(s, e.scanId)}, and it looks like the same spot.`
+          : `You lined this up with ${scanLabel(s, e.scanId)}, and it looks like it might be the same spot.`;
       return e.decidedBy === "user"
         ? `Thanks, I'll treat this as the same area as ${scanLabel(s, e.scanId)}.`
         : e.sameArea === "yes"

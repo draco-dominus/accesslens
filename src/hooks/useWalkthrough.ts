@@ -25,10 +25,13 @@ export type WalkthroughState = {
   media: Record<string, ScanMedia>;
   /** Scans currently re-checking an earlier area after the user's confirmation. */
   checking: Record<string, boolean>;
+  /** "Try comparison again" state, keyed by retryKey(scanId, findingId, referenceScanId). */
+  comparisonRetries: Record<string, { busy: boolean; error?: string }>;
   restored: boolean; // session came from sessionStorage (photos not available)
 };
 
-const EMPTY: WalkthroughState = { session: null, media: {}, checking: {}, restored: false };
+const EMPTY: WalkthroughState = { session: null, media: {}, checking: {}, comparisonRetries: {}, restored: false };
+export const retryKey = (scanId: string, findingId: string, referenceScanId: string) => `${scanId}|${findingId}|${referenceScanId}`;
 const newId = (prefix: string) => `${prefix}_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
 const message = (err: unknown, fallback: string) => (err instanceof Error && err.message ? err.message : fallback);
 
@@ -358,10 +361,60 @@ export function useWalkthrough() {
     [currentRun, update],
   );
 
+  /** Re-run one failed comparison with the two photos already prepared (no rescan, no re-analysis). */
+  const retryComparison = useCallback(
+    (scanId: string, findingId: string, referenceScanId: string) => {
+      const run = currentRun();
+      if (!run) return;
+      const key = retryKey(scanId, findingId, referenceScanId);
+      if (store.get().comparisonRetries[key]?.busy) return; // ignore double taps
+      const setRetry = (v: { busy: boolean; error?: string } | null) => {
+        if (store.get().session?.id !== run.sessionId) return;
+        store.set((st) => {
+          const comparisonRetries = { ...st.comparisonRetries };
+          if (v) comparisonRetries[key] = v;
+          else delete comparisonRetries[key];
+          return { ...st, comparisonRetries };
+        });
+      };
+      setRetry({ busy: true });
+      enqueue(run, async () => {
+        let outcome: E.CompareOutcome | null = null;
+        try {
+          outcome = await compareFinding(run, findingId, referenceScanId, scanId);
+          if (!alive(run)) return;
+          if ("error" in outcome) {
+            setRetry({ busy: false, error: outcome.error });
+            return;
+          }
+          update(run, (s) => E.applyRetriedComparison(s, scanId, outcome!, Date.now()));
+          setRetry(null);
+          pruneImages();
+        } finally {
+          if (!outcome) setRetry(null); // aborted: clear the spinner
+        }
+      });
+    },
+    [store, currentRun, enqueue, compareFinding, alive, update, pruneImages],
+  );
+
+  /** True while any comparison retry for this scan is running. */
+  const retryingAny = useCallback(
+    (scanId: string) => Object.entries(state.comparisonRetries).some(([k, v]) => v.busy && k.startsWith(`${scanId}|`)),
+    [state],
+  );
+
+  /** Finishing is refused while any scan is queued/processing or a re-check is running. */
   const finish = useCallback(() => {
     const run = currentRun();
-    if (run) update(run, (s) => E.finishSession(s, Date.now()));
-  }, [currentRun, update]);
+    const st = store.get();
+    if (!run || !st.session) return;
+    const busy =
+      !E.canFinish(st.session) ||
+      Object.values(st.checking).some(Boolean) ||
+      Object.values(st.comparisonRetries).some((r) => r.busy);
+    if (!busy) update(run, (s) => E.finishSession(s, Date.now()));
+  }, [store, currentRun, update]);
   const resume = useCallback(() => {
     const run = currentRun();
     if (run) update(run, (s) => ({ ...s, finishedAt: null }));
@@ -388,6 +441,8 @@ export function useWalkthrough() {
     declineRevisit,
     confirmDuplicate,
     duplicateSuggestions,
+    retryComparison,
+    retryingAny,
     manualRevisitOptions,
     finish,
     resume,

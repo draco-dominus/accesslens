@@ -34,6 +34,8 @@ export type FindingEvent = {
   comparison?: Comparison;
   guardrail?: GuardrailAdjustment | null;
   model?: string;
+  /** For comparison events: the earlier scan whose photo was compared. */
+  referenceScanId?: string;
 };
 
 /**
@@ -43,10 +45,18 @@ export type FindingEvent = {
 export type RelationSource = "auto" | "user" | "lineup";
 export type ScanRelation = {
   scanId: string; // the earlier scan
+  /** Final verdict after reconciling the scene match with the comparisons (see engine.reconcileArea). */
   sameArea: SameArea;
   decidedBy: RelationSource;
   evidence: string;
+  /** The quick scene-match verdict, before comparison evidence ("unclear" when none was requested). */
+  sceneVerdict?: SameArea;
+  /** Same-place verdicts from each successful comparison against this scan. */
+  comparisonVerdicts?: SameArea[];
 };
+
+/** A comparison that failed (network/AI error) and can be retried without rescanning. */
+export type FailedComparison = { findingId: string; referenceScanId: string; source: RelationSource };
 
 /**
  * One real processing stage of a scan, for truthful progress and timing diagnostics.
@@ -96,8 +106,10 @@ export type Scan = {
   relations: ScanRelation[];
   /** Earlier scans the user should confirm or deny as the same area (automatic match was "unclear"). */
   pendingRevisit: string[];
-  /** Earlier scans already compared against, so they aren't offered again. */
+  /** Earlier scans successfully compared against, so they aren't offered again. Failed ones stay retryable. */
   comparedWith: string[];
+  /** Comparisons that failed and can be retried with "Try comparison again". */
+  failedComparisons?: FailedComparison[];
   events: ScanEvent[];
 };
 

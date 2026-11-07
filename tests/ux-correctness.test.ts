@@ -111,12 +111,15 @@ describe("location messaging is reconciled with comparison evidence", () => {
     assert.match(said(s), /couldn't compare finding #1/);
   });
 
-  it("reconcileArea rules", () => {
-    assert.equal(E.reconcileArea("yes", []), "yes");
-    assert.equal(E.reconcileArea("likely", ["yes", "no"]), "yes");
+  it("reconcileArea rules (conservative: only unanimous evidence confirms)", () => {
+    assert.equal(E.reconcileArea("yes", []), "yes", "no evidence: scene match stands");
+    assert.equal(E.reconcileArea("likely", ["yes", "yes"]), "yes");
+    assert.equal(E.reconcileArea("likely", ["yes", "no"]), "unclear", "conflict is never a confirmed revisit");
     assert.equal(E.reconcileArea("yes", ["no", "no"]), "no");
     assert.equal(E.reconcileArea("yes", ["no", "unclear"]), "unclear");
-    assert.equal(E.reconcileArea("yes", ["likely", "no"]), "likely");
+    assert.equal(E.reconcileArea("yes", ["likely", "no"]), "unclear");
+    assert.equal(E.reconcileArea("yes", ["yes", "likely"]), "likely");
+    assert.equal(E.reconcileArea("yes", ["yes", "unclear"]), "unclear");
   });
 });
 

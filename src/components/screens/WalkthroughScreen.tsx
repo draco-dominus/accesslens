@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import type { useWalkthrough } from "@/hooks/useWalkthrough";
-import { progressLine, scanMood, stepLabel, walkthroughSummary } from "@/lib/session/lumi";
+import { canFinish } from "@/lib/session/engine";
+import { progressLine, scanActivity, scanMood, walkthroughSummary } from "@/lib/session/lumi";
 import type { Session, TrackedFinding } from "@/lib/session/types";
 import { Sidekick } from "../lumi/Sidekick";
 import { ChevronRight, Moon, Scan, Sun } from "../ui/Icons";
@@ -36,6 +37,9 @@ export function WalkthroughScreen({
   const finished = session.finishedAt !== null;
   const doneScans = summary.scans;
   const open = summary.unresolved.length + summary.needsVerification.length;
+  // Never finish while a scan is queued/processing or an earlier spot is being re-checked.
+  const busyScan = session.scans.find((sc) => (sc.step !== "done" && sc.step !== "error") || wt.checking[sc.id] || wt.retryingAny(sc.id));
+  const finishable = canFinish(session) && !busyScan;
 
   const groups: { title: string; items: TrackedFinding[] }[] = [
     { title: "Still open", items: summary.unresolved },
@@ -132,7 +136,7 @@ export function WalkthroughScreen({
                       .join(" · ")
                   : sc.step === "error"
                     ? "Couldn’t finish"
-                    : `${stepLabel(sc.step)}…`;
+                    : `${scanActivity(sc).title}…`;
               return (
                 <li key={sc.id}>
                   <button
@@ -182,9 +186,14 @@ export function WalkthroughScreen({
           </>
         ) : (
           <>
-            <Button className="w-full" onClick={wt.finish} disabled={!doneScans}>
+            <Button className="w-full" onClick={wt.finish} disabled={!finishable}>
               Finish walkthrough
             </Button>
+            {busyScan && (
+              <p className="px-4 text-center text-[13px] leading-snug text-muted" aria-live="polite">
+                Lumi is still working on scan {busyScan.number}. You can finish once it’s done.
+              </p>
+            )}
             <Button variant="secondary" className="w-full" onClick={onScan} icon={<Scan size={19} />}>
               {doneScans ? "Scan again" : "Start scanning"}
             </Button>

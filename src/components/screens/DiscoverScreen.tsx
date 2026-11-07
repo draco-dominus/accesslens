@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import type { useWalkthrough } from "@/hooks/useWalkthrough";
+import { retryKey, type useWalkthrough } from "@/hooks/useWalkthrough";
 import { findingsForScan, lineUpSuggestion, lumiMessagesForScan, scanMood } from "@/lib/session/lumi";
 import { isOpen, type FindingEvent, type Scan, type TrackedFinding } from "@/lib/session/types";
 import { activeStageSummary, StageChecklist, TimingBreakdown, useTicker } from "../lumi/ScanProgress";
@@ -233,6 +233,11 @@ export function DiscoverScreen({
               ))}
             </ul>
 
+            {scan.step === "done" &&
+              (scan.failedComparisons ?? []).map((f) => (
+                <FailedComparisonCard key={`${f.findingId}|${f.referenceScanId}`} wt={wt} scanId={scan.id} findingId={f.findingId} referenceScanId={f.referenceScanId} />
+              ))}
+
             {manualOptions.length > 0 && <ManualRevisit wt={wt} scanId={scan.id} options={manualOptions} />}
 
             {showTiming && <TimingBreakdown scan={scan} />}
@@ -268,6 +273,34 @@ export function DiscoverScreen({
           </div>
         </BottomSheet>
       </div>
+    </div>
+  );
+}
+
+/** A comparison that failed: retry just that comparison with the photos already prepared. */
+function FailedComparisonCard({ wt, scanId, findingId, referenceScanId }: { wt: Walkthrough; scanId: string; findingId: string; referenceScanId: string }) {
+  const session = wt.session!;
+  const finding = session.findings.find((f) => f.id === findingId);
+  const earlier = session.scans.find((s) => s.id === referenceScanId);
+  if (!finding || !earlier) return null;
+  const state = wt.comparisonRetries[retryKey(scanId, findingId, referenceScanId)];
+  const photosAvailable = wt.hasImage(scanId) && wt.hasImage(referenceScanId);
+  return (
+    <div className="mx-4 mt-3 rounded-[20px] bg-surface px-4 py-3 shadow-[var(--shadow-soft)]" role="group" aria-label={`Comparison for finding ${finding.number} didn't finish`}>
+      <p className="text-[15px] leading-snug">
+        <span className="font-semibold">I couldn’t re-check #{finding.number} {finding.details.title}</span>
+        <span className="text-muted"> against scan {earlier.number}. Its status hasn’t changed.</span>
+      </p>
+      <div aria-live="polite">
+        {state?.error && <p className="mt-1 text-[13px] leading-snug text-muted">Still didn’t work: {state.error}</p>}
+      </div>
+      {photosAvailable ? (
+        <Button size="md" className="mt-2" disabled={state?.busy} onClick={() => wt.retryComparison(scanId, findingId, referenceScanId)} icon={<Rescan size={17} />}>
+          {state?.busy ? "Comparing…" : "Try comparison again"}
+        </Button>
+      ) : (
+        <p className="mt-1 text-[13px] leading-snug text-muted">The photos are no longer available. Re-check the spot with Line up instead.</p>
+      )}
     </div>
   );
 }

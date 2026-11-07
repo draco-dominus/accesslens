@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { useWalkthrough } from "@/hooks/useWalkthrough";
 import { fitContain, type Size } from "@/lib/fit";
 import { openFindingsLastSeenIn } from "@/lib/session/engine";
+import { scanActivity } from "@/lib/session/lumi";
 import { isOpen } from "@/lib/session/types";
 import type { LumiMood } from "../lumi/Sidekick";
 import { Camera, Layers, Photos } from "../ui/Icons";
@@ -140,7 +141,7 @@ export function ScanScreen({
   const title = ghost
     ? `Line up with scan ${ghost.scan.number}`
     : busy
-      ? `Still looking at scan ${busy.number}`
+      ? `Still working on scan ${busy.number}`
       : session?.scans.length
         ? "Scan anywhere you like"
         : "Let’s look at this space";
@@ -149,7 +150,7 @@ export function ScanScreen({
       ? `Match the faint outline, then tap the shutter. I’ll re-check ${ghostWhat ?? "its findings"} directly.`
       : `Take your photo from where this one was taken. I’ll re-check ${ghostWhat ?? "its findings"} directly.`
     : busy
-      ? "You can keep scanning. I’ll get to this one next."
+      ? `${scanActivity(busy).title}. You can keep scanning; I’ll queue the next photo.`
       : ghostOptions.length
         ? `${openCount} ${openCount === 1 ? "concern is" : "concerns are"} still open. Re-checking one? Tap its photo under “Line up”.`
         : "Point at an entrance, walkway or room. I look for steps, blocked paths and things sticking out.";

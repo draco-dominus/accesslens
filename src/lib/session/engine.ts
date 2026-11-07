@@ -3,6 +3,7 @@ import type { CompareSuccess, ComparisonStatus } from "../comparison-schema";
 import { MAX_MATCH_CANDIDATES, type MatchSuccess, type SameArea } from "../match-schema";
 import {
   isOpen,
+  type FailedComparison,
   type FindingStatus,
   type Scan,
   type ScanEvent,
@@ -147,17 +148,43 @@ function comparisonVerdicts(comparisons: CompareOutcome[], earlierScanId: string
 }
 
 /**
- * Combine the scene match's verdict with the comparisons' closer, evidence-first verdicts.
- * No comparison evidence → keep the scene match's verdict (it wasn't contradicted).
- * Any comparison sees the same place → "yes". All say different → "no". Otherwise the strongest remaining.
+ * Combine the scene match's verdict with the comparisons' closer, evidence-first verdicts. Conservative:
+ *  - no comparison evidence → keep the scene match's verdict (it wasn't contradicted);
+ *  - every comparison says the same place → "yes" (the only way to a confirmed revisit);
+ *  - every comparison says a different place → "no";
+ *  - any disagreement (a "no" alongside "yes"/"likely") or any "unclear" → "unclear";
+ *  - otherwise (all "likely", or "yes" mixed with "likely") → "likely".
  */
 export function reconcileArea(sceneMatch: SameArea, verdicts: SameArea[]): SameArea {
   if (!verdicts.length) return sceneMatch;
-  if (verdicts.includes("yes")) return "yes";
+  if (verdicts.every((v) => v === "yes")) return "yes";
   if (verdicts.every((v) => v === "no")) return "no";
-  if (verdicts.includes("likely")) return "likely";
-  return "unclear";
+  if (verdicts.includes("no") || verdicts.includes("unclear")) return "unclear";
+  return "likely";
 }
+
+/**
+ * "Improved" needs a confirmed same place for that earlier scan across ALL its comparisons. If the
+ * comparisons disagree (or only suggest "likely"), an improvement can't be claimed: needs verification.
+ */
+function guardAgainstConflicts(u: StatusUpdate, areaVerdict: SameArea | undefined): StatusUpdate {
+  if (u.status !== "appears_improved" || areaVerdict === undefined || areaVerdict === "yes") return u;
+  return {
+    ...u,
+    status: "needs_verification",
+    note: "The comparisons with that earlier photo disagreed about whether this is the same spot, so I can't confirm the change.",
+  };
+}
+
+/** Area of the most recent earlier scan confirmed as the same place, else a new area for this scan. */
+function areaFor(s: Session, scanId: string, relations: ScanRelation[]): string {
+  const confirmed = relations.filter((r) => r.sameArea === "yes").map((r) => getScan(s, r.scanId)).filter((x): x is Scan => Boolean(x));
+  return confirmed.sort((a, b) => b.number - a.number)[0]?.areaId ?? `area-${scanId}`;
+}
+
+const failuresOf = (comparisons: CompareOutcome[], source: FailedComparison["source"]): FailedComparison[] =>
+  comparisons.filter((c) => "error" in c).map((c) => ({ findingId: c.findingId, referenceScanId: c.referenceScanId, source }));
+const succeededRefs = (comparisons: CompareOutcome[]) => comparisons.filter((c) => "result" in c).map((c) => c.referenceScanId);
 
 /** The comparison concluded the two photos don't (clearly) show the same place. */
 function differentPlace(outcome: CompareOutcome | undefined): boolean {
@@ -244,6 +271,7 @@ function applyUpdates(s: Session, scanId: string, updates: StatusUpdate[], now: 
           comparison: compared?.comparison,
           guardrail: compared?.guardrail ?? null,
           model: compared?.model,
+          referenceScanId: compared ? u.referenceScanId : undefined,
         },
       ],
     };
@@ -282,18 +310,26 @@ export function integrateScan(
   // 1. Scene relations and area.
   const relations: ScanRelation[] = (input.match?.candidates ?? [])
     .filter((c) => c.scanId !== lineUp)
-    .map((c) => ({ scanId: c.scanId, sameArea: c.sameArea, decidedBy: "auto" as const, evidence: c.evidence }));
+    .map((c) => ({ scanId: c.scanId, sameArea: c.sameArea, sceneVerdict: c.sameArea, decidedBy: "auto" as const, evidence: c.evidence }));
   if (lineUp) {
-    const verdicts = input.comparisons
-      .filter((c) => c.referenceScanId === lineUp && "result" in c)
-      .map((c) => ("result" in c ? c.result.comparison.sameLocation : "unclear"));
-    const sameArea = verdicts.includes("yes") ? "yes" : verdicts.includes("likely") ? "likely" : verdicts.includes("no") ? "no" : "unclear";
-    relations.push({ scanId: lineUp, sameArea, decidedBy: "lineup", evidence: "You lined this photo up with this scan; the comparison checked the fixed features." });
+    // Line up skips the scene match, so the comparisons alone decide — and they must agree.
+    const verdicts = comparisonVerdicts(input.comparisons, lineUp);
+    const sameArea = reconcileArea("unclear", verdicts);
+    relations.push({
+      scanId: lineUp,
+      sameArea,
+      sceneVerdict: "unclear",
+      comparisonVerdicts: verdicts,
+      decidedBy: "lineup",
+      evidence: "You lined this photo up with this scan; the comparisons checked the fixed features.",
+    });
+    const n = getScan(s, lineUp)!.number;
     if (sameArea === "yes" || sameArea === "likely") {
       events.push({ kind: "revisit", scanId: lineUp, sameArea, decidedBy: "lineup" });
-    } else if (verdicts.length) {
-      const n = getScan(s, lineUp)!.number;
+    } else if (sameArea === "no") {
       events.push({ kind: "notice", message: `This doesn't look like the same spot as scan ${n}, so I left its findings as they were.` });
+    } else if (verdicts.length) {
+      events.push({ kind: "notice", message: `The comparisons with scan ${n} disagreed about whether this is the same spot, so I didn't count any improvement there.` });
     }
   }
   // Reconcile the quick scene match with the evidence-first comparisons before saying anything about
@@ -301,11 +337,15 @@ export function integrateScan(
   const contradicted: string[] = [];
   relations.forEach((r, i) => {
     if (r.decidedBy !== "auto") return;
-    const verdict = reconcileArea(r.sameArea, comparisonVerdicts(input.comparisons, r.scanId));
-    if (verdict !== r.sameArea) {
-      if (verdict === "no") contradicted.push(r.scanId);
-      relations[i] = { ...r, sameArea: verdict, evidence: `${r.evidence} (Updated after comparing the photos closely: ${verdict}.)` };
-    }
+    const verdicts = comparisonVerdicts(input.comparisons, r.scanId);
+    const verdict = reconcileArea(r.sameArea, verdicts);
+    if (verdict === "no" && r.sameArea !== "no") contradicted.push(r.scanId);
+    relations[i] = {
+      ...r,
+      sameArea: verdict,
+      comparisonVerdicts: verdicts,
+      evidence: verdict === r.sameArea ? r.evidence : `${r.evidence} (Updated after comparing the photos closely: ${verdict}.)`,
+    };
   });
   for (const r of relations) {
     if (r.decidedBy !== "auto") continue;
@@ -326,9 +366,8 @@ export function integrateScan(
     events.push({ kind: "notice", message: "I couldn't automatically check whether this is an area we've already scanned." });
   }
 
-  const confirmed = relations.filter((r) => r.sameArea === "yes").map((r) => getScan(s, r.scanId)!);
-  const areaId =
-    confirmed.sort((a, b) => b.number - a.number)[0]?.areaId ?? `area-${scanId}`;
+  const areaId = areaFor(s, scanId, relations);
+  const verdictFor = (ref: string) => relations.find((r) => r.scanId === ref)?.sameArea;
 
   // 2. Updates to existing findings from comparisons and duplicate sightings.
   const duplicates = new Map((input.match?.duplicates ?? []).map((d) => [d.findingId, d.newFindingIndex]));
@@ -338,8 +377,9 @@ export function integrateScan(
     const finding = s.findings.find((f) => f.id === findingId);
     if (!finding) continue;
     const outcome = input.comparisons.find((c) => c.findingId === findingId);
-    const u = decideUpdate(findingId, outcome, duplicates.has(findingId), outcome?.referenceScanId ?? finding.lastSeenScanId);
-    if (u) updates.push(u);
+    const ref = outcome?.referenceScanId ?? finding.lastSeenScanId;
+    const u = decideUpdate(findingId, outcome, duplicates.has(findingId), ref);
+    if (u) updates.push(guardAgainstConflicts(u, verdictFor(ref)));
     if (outcome && "error" in outcome) {
       events.push({ kind: "notice", message: `I couldn't compare finding #${finding.number} with the earlier photo this time.` });
     }
@@ -379,7 +419,8 @@ export function integrateScan(
     areaId,
     relations,
     pendingRevisit,
-    comparedWith: [...new Set(input.comparisons.map((c) => c.referenceScanId))],
+    comparedWith: [...new Set(succeededRefs(input.comparisons))],
+    failedComparisons: failuresOf(input.comparisons, lineUp ? "lineup" : "auto"),
     events,
     doneAt: now,
   }));
@@ -403,10 +444,12 @@ export function applyUserRevisit(
   if (!scan || !earlier) return s;
   const events: ScanEvent[] = [{ kind: "revisit", scanId: earlierScanId, sameArea: "yes", decidedBy: "user" }];
 
+  const verdicts = comparisonVerdicts(comparisons, earlierScanId);
+  const areaVerdict = reconcileArea("unclear", verdicts); // the user's "yes" can't override disagreeing photos
   const updates: StatusUpdate[] = [];
   for (const outcome of comparisons) {
     const u = decideUpdate(outcome.findingId, outcome, false, earlierScanId, true);
-    if (u) updates.push(u);
+    if (u) updates.push(guardAgainstConflicts(u, areaVerdict));
     else events.push({ kind: "notice", message: "I couldn't compare one of the earlier findings this time." });
   }
   const applied = applyUpdates(s, scanId, updates, now);
@@ -419,10 +462,14 @@ export function applyUserRevisit(
     areaId: earlier.areaId ?? sc.areaId,
     relations: [
       ...sc.relations.filter((r) => r.scanId !== earlierScanId),
-      { scanId: earlierScanId, sameArea: "yes", decidedBy: "user", evidence: "Confirmed by you." },
+      { scanId: earlierScanId, sameArea: "yes", decidedBy: "user", evidence: "Confirmed by you.", comparisonVerdicts: verdicts },
     ],
     pendingRevisit: sc.pendingRevisit.filter((id) => id !== earlierScanId),
-    comparedWith: [...new Set([...sc.comparedWith, earlierScanId])],
+    comparedWith: [...new Set([...sc.comparedWith, ...succeededRefs(comparisons)])],
+    failedComparisons: [
+      ...(sc.failedComparisons ?? []).filter((f) => f.referenceScanId !== earlierScanId),
+      ...failuresOf(comparisons, "user"),
+    ],
     events: [...sc.events, ...events],
   }));
   return { ...next, areaCount: areaCount(next.scans) };
@@ -520,6 +567,10 @@ export function scansNeedingImages(s: Session): Set<string> {
       keep.add(sc.id); // the user may still confirm a revisit, which compares against these
       sc.pendingRevisit.forEach((id) => keep.add(id));
     }
+    if (sc.failedComparisons?.length) {
+      keep.add(sc.id); // "Try comparison again" reuses both photos
+      sc.failedComparisons.forEach((f) => keep.add(f.referenceScanId));
+    }
   }
   // Keep the newest scan so the user can still manually link it to an earlier area.
   const last = s.scans[s.scans.length - 1];
@@ -528,5 +579,95 @@ export function scansNeedingImages(s: Session): Set<string> {
 }
 
 export function finishSession(s: Session, now: number): Session {
-  return { ...s, finishedAt: now };
+  return canFinish(s) ? { ...s, finishedAt: now } : s;
+}
+
+/**
+ * Apply a re-run of one comparison that previously failed ("Try comparison again"). Reuses the same two
+ * photos; no rescan. The new same-place verdict joins the earlier evidence for that reference scan and
+ * everything is reconciled again with the same conservative rules as a fresh scan:
+ *  - automatic / line-up: a "different place" verdict leaves the finding untouched;
+ *  - any disagreement between comparisons means no confirmed revisit, and an improvement already recorded
+ *    against that earlier photo in this scan is downgraded to "needs verification".
+ * A comparison that fails again changes nothing and stays retryable.
+ */
+export function applyRetriedComparison(s: Session, scanId: string, outcome: CompareOutcome, now: number): Session {
+  const scan = getScan(s, scanId);
+  const entry = scan?.failedComparisons?.find((f) => f.findingId === outcome.findingId && f.referenceScanId === outcome.referenceScanId);
+  if (!scan || !entry || !("result" in outcome)) return s;
+  const ref = entry.referenceScanId;
+  const earlier = getScan(s, ref);
+  if (!earlier) return s;
+  const events: ScanEvent[] = [];
+
+  // Re-reconcile the relation with the new verdict.
+  const prior = scan.relations.find((r) => r.scanId === ref);
+  const verdicts = [...(prior?.comparisonVerdicts ?? []), outcome.result.comparison.sameLocation];
+  const userConfirmed = entry.source === "user";
+  const areaVerdict = userConfirmed ? reconcileArea("unclear", verdicts) : reconcileArea(prior?.sceneVerdict ?? prior?.sameArea ?? "unclear", verdicts);
+  const relation: ScanRelation = prior
+    ? { ...prior, comparisonVerdicts: verdicts, sameArea: userConfirmed ? prior.sameArea : areaVerdict }
+    : { scanId: ref, sameArea: areaVerdict, decidedBy: entry.source, evidence: "Checked by comparing the photos.", comparisonVerdicts: verdicts };
+  const relations = [...scan.relations.filter((r) => r.scanId !== ref), relation];
+
+  const wasYes = prior?.sameArea === "yes";
+  if (!userConfirmed && relation.sameArea !== prior?.sameArea) {
+    if (relation.sameArea === "yes" || relation.sameArea === "likely") {
+      events.push({ kind: "revisit", scanId: ref, sameArea: relation.sameArea, decidedBy: entry.source });
+    } else if (relation.sameArea === "no") {
+      events.push({ kind: "notice", message: `A closer comparison found this is a different spot from scan ${earlier.number}, so I left its findings as they were.` });
+    } else if (verdicts.length > 1) {
+      events.push({ kind: "notice", message: `The comparisons with scan ${earlier.number} now disagree about whether this is the same spot, so I can't confirm changes there.` });
+    }
+  }
+
+  // The retried finding.
+  const updates: StatusUpdate[] = [];
+  const finding = s.findings.find((f) => f.id === outcome.findingId);
+  // Never let an older comparison overwrite a newer one from a later scan.
+  const laterCheck = finding?.history.some((h) => (getScan(s, h.scanId)?.number ?? 0) > scan.number);
+  const u = finding && !laterCheck ? decideUpdate(outcome.findingId, outcome, false, ref, userConfirmed) : null;
+  if (u) updates.push(guardAgainstConflicts(u, areaVerdict));
+  if (finding && laterCheck) {
+    events.push({ kind: "notice", message: `A later scan already re-checked finding #${finding.number}, so I kept that newer result.` });
+  }
+  // If the place is no longer confirmed, earlier "improved" results against this photo in this scan can't stand.
+  if (areaVerdict !== "yes") {
+    for (const f of s.findings) {
+      const last = f.history.at(-1);
+      if (f.id !== outcome.findingId && f.status === "appears_improved" && last?.scanId === scanId && last.referenceScanId === ref) {
+        updates.push({
+          findingId: f.id,
+          status: "needs_verification",
+          source: "comparison",
+          note: "Another comparison with the same earlier photo disagreed about whether this is the same spot, so I can't confirm the change.",
+          seenInNewScan: false,
+          referenceScanId: ref,
+        });
+      }
+    }
+  }
+  const applied = applyUpdates(s, scanId, updates, now);
+  events.push(...applied.events);
+
+  const next = updateScan(applied.session, scanId, (sc) => ({
+    ...sc,
+    relations,
+    areaId: areaFor(s, scanId, relations),
+    pendingRevisit:
+      !userConfirmed && relation.sameArea === "unclear" && entry.source === "auto"
+        ? [...new Set([...sc.pendingRevisit, ref])]
+        : wasYes || relation.sameArea === "yes"
+          ? sc.pendingRevisit.filter((id) => id !== ref)
+          : sc.pendingRevisit,
+    comparedWith: [...new Set([...sc.comparedWith, ref])],
+    failedComparisons: (sc.failedComparisons ?? []).filter((f) => f !== entry),
+    events: [...sc.events, ...events],
+  }));
+  return { ...next, areaCount: areaCount(next.scans) };
+}
+
+/** A walkthrough can only be finished once no scan is still queued or being processed. */
+export function canFinish(s: Session): boolean {
+  return s.scans.some((sc) => sc.step === "done") && s.scans.every((sc) => sc.step === "done" || sc.step === "error");
 }

@@ -61,6 +61,8 @@ export async function runScanPipeline(
   if (opts.signal.aborted) local.abort();
   opts.signal.addEventListener("abort", onParentAbort);
   const signal = local.signal;
+  // Why sibling requests were cancelled, for an honest stage note.
+  let cancelReason = "Cancelled";
 
   const tracked = async <T extends Timed>(id: string, label: string, fn: () => Promise<T>): Promise<T> => {
     stage({ id, label, state: "active", startedAt: now() });
@@ -69,7 +71,7 @@ export async function runScanPipeline(
       stage({ id, state: "done", endedAt: now(), timing: out.timing });
       return out;
     } catch (err) {
-      stage({ id, state: isAbort(err) ? "skipped" : "failed", endedAt: now(), note: isAbort(err) ? "Cancelled" : undefined });
+      stage({ id, state: isAbort(err) ? "skipped" : "failed", endedAt: now(), note: isAbort(err) ? cancelReason : undefined });
       throw err;
     }
   };
@@ -135,12 +137,15 @@ export async function runScanPipeline(
     revisitP.catch(() => {}); // awaited below; avoid an unhandled rejection if analysis fails first
 
     const { analysis, model } = await analysisP;
-    const revisit = await revisitP;
 
-    // An unusable photo (too dark/blurry, not a place) can't support any revisit conclusion.
+    // An unusable photo (too dark/blurry, not a place) can't support any revisit conclusion: stop the
+    // revisit requests still in flight instead of waiting for results we'd discard.
     if (!analysis.imageUsable) {
+      cancelReason = "Not needed: the photo couldn't be assessed";
+      local.abort();
       return { analysis, model, candidateScanIds: [], match: null, matchFailed: false, comparisons: [], lineUpScanId: undefined };
     }
+    const revisit = await revisitP;
 
     // Follow-up duplicate check, only when a duplicate is possible.
     const sameAreaIds = lineUp

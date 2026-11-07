@@ -266,3 +266,28 @@ export function lineUpSuggestion(s: Session, scanId: string): { scanId: string; 
         : `Once the ${name} is moved or fixed, tap Re-check and line up with this photo, so I compare from the same spot.`;
   return { scanId, text };
 }
+
+/**
+ * What Lumi is doing for a scan right now, derived only from the pipeline's real stages (never from a
+ * timer). Several stages can be active at once (analysis runs alongside the revisit check).
+ */
+export function scanActivity(scan: Scan): { title: string; detail?: string } {
+  const stages = scan.stages ?? [];
+  const active = stages.filter((st) => st.state === "active");
+  if (scan.step === "done") return { title: "Done" };
+  if (scan.step === "error") return { title: "Couldn't finish this scan" };
+  if (active.length) {
+    const [first, ...rest] = active;
+    return { title: first.label, detail: rest.length ? `Also: ${rest.map((st) => st.label.toLowerCase()).join("; ")}` : undefined };
+  }
+  if (scan.step === "queued") {
+    return stages.some((st) => st.id === "prepare" && st.state === "done")
+      ? { title: "Photo ready, waiting for the previous scan to finish" }
+      : { title: "Waiting for the previous scan to finish" };
+  }
+  if (scan.step === "preparing") return { title: "Getting your photo ready" };
+  // Between stages (e.g. all requests answered, results being combined).
+  return stages.some((st) => st.state === "done" && st.id !== "prepare")
+    ? { title: "Putting the results together" }
+    : { title: "Starting the analysis" };
+}

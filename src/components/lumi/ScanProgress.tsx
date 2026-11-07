@@ -22,14 +22,8 @@ export function useTicker(active: boolean, ms = 250) {
   return now;
 }
 
-/** What Lumi is doing right now, from the active stages. */
-export function activeStageSummary(scan: Scan): { title: string; detail?: string } {
-  const active = (scan.stages ?? []).filter((s) => s.state === "active");
-  if (scan.step === "queued" && !active.length) return { title: "Waiting for the previous scan to finish" };
-  if (!active.length) return { title: "Getting started" };
-  const [first, ...rest] = active;
-  return { title: first.label, detail: rest.length ? `Also: ${rest.map((s) => s.label.toLowerCase()).join("; ")}` : undefined };
-}
+/** What Lumi is doing right now: see scanActivity in lib/session/lumi.ts (derived from real stages). */
+export { scanActivity as activeStageSummary } from "@/lib/session/lumi";
 
 export function StageChecklist({ scan }: { scan: Scan }) {
   const processing = scan.step !== "done" && scan.step !== "error";

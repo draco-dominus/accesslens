@@ -1,3 +1,4 @@
+import { guardRequest } from "@/lib/request-guard.server";
 import { errorResponse, readForm } from "@/lib/api-errors.server";
 import { analyzeImage } from "@/lib/gemini.server";
 import { readImageField } from "@/lib/image.server";
@@ -11,6 +12,8 @@ const DISCLAIMER =
   "A photo cannot confirm that a space is accessible; measurements and an on-site review are needed.";
 
 export async function POST(request: Request) {
+  const blocked = guardRequest(request, "analyze");
+  if (blocked) return blocked;
   const form = await readForm(request);
   if (form instanceof Response) return form;
 

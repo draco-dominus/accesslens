@@ -126,7 +126,7 @@ export function DiscoverScreen({
                       <p className="text-[17px] leading-snug font-semibold tracking-[-0.015em]">I couldn’t finish this scan.</p>
                       <p className="mt-0.5 text-[14px] leading-snug text-muted">{scan.error}</p>
                       <div className="mt-3 flex flex-wrap gap-2">
-                        {wt.hasImage(scan.id) && (
+                        {wt.canRetry(scan.id) && (
                           <Button size="md" onClick={() => wt.retryScan(scan.id)} icon={<Rescan size={17} />}>
                             Try again
                           </Button>
@@ -353,6 +353,7 @@ export function FindingCard({
         </span>
         <ChevronDown size={20} className={`mt-1.5 shrink-0 text-muted transition-transform duration-300 ${open ? "rotate-180" : ""}`} />
       </button>
+      {role === "new" && <DuplicatePrompt wt={wt} scanId={scanId} findingId={finding.id} />}
       <div
         id={`finding-${finding.id}`}
         className={`grid transition-[grid-template-rows] duration-[480ms] ease-[var(--ease-ios)] ${open ? "grid-rows-[1fr]" : "grid-rows-[0fr]"}`}
@@ -368,6 +369,37 @@ export function FindingCard({
             </Button>
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Explicit, per-finding duplicate confirmation. Offered only for pairs the engine considers plausible
+ * (same type as an earlier finding that a comparison in this scan found still present); never automatic.
+ */
+function DuplicatePrompt({ wt, scanId, findingId }: { wt: Walkthrough; scanId: string; findingId: string }) {
+  const session = wt.session!;
+  const pairs = wt.duplicateSuggestions(scanId).filter((p) => p.newFindingId === findingId);
+  if (!pairs.length) return null;
+  return (
+    <div className="mx-4 mb-3 rounded-2xl bg-surface-2 px-3 py-2.5" role="group" aria-label="Possible duplicate">
+      <p className="text-[14px] leading-snug">Could this be a barrier we already recorded?</p>
+      <div className="mt-2 flex flex-wrap gap-2">
+        {pairs.map((p) => {
+          const existing = session.findings.find((f) => f.id === p.existingFindingId);
+          if (!existing) return null;
+          return (
+            <button
+              key={p.existingFindingId}
+              type="button"
+              onClick={() => wt.confirmDuplicate(scanId, findingId, p.existingFindingId)}
+              className="pressable min-h-11 rounded-full border border-line bg-surface px-4 text-[14px] font-semibold"
+            >
+              Same as #{existing.number} {existing.details.title}
+            </button>
+          );
+        })}
       </div>
     </div>
   );

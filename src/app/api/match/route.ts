@@ -1,3 +1,4 @@
+import { guardRequest } from "@/lib/request-guard.server";
 import { errorResponse, fail, readForm } from "@/lib/api-errors.server";
 import { matchScene } from "@/lib/gemini.server";
 import { readImageField } from "@/lib/image.server";
@@ -19,6 +20,8 @@ const CANDIDATE_MAX_EDGE = 1024;
  * It never changes a finding's status: improvements are only judged by /api/compare.
  */
 export async function POST(request: Request) {
+  const blocked = guardRequest(request, "match");
+  if (blocked) return blocked;
   const form = await readForm(request);
   if (form instanceof Response) return form;
 
@@ -39,7 +42,8 @@ export async function POST(request: Request) {
     ]);
     const { model, output } = await matchScene(newImage, candidateImages, ctx);
     const result = resolveMatch(ctx, output, model);
-    console.info("[match]", JSON.stringify({ candidates: result.candidates.map((c) => [c.scanId, c.sameArea]), duplicates: result.duplicates }));
+    // Counts only: no scan or session identifiers in logs.
+    console.info("[match]", JSON.stringify({ model, candidates: result.candidates.map((c) => c.sameArea), duplicates: result.duplicates.length }));
     return Response.json(result);
   } catch (err) {
     return errorResponse(err, "match");

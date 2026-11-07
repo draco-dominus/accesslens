@@ -1,3 +1,4 @@
+import { guardRequest } from "@/lib/request-guard.server";
 import { errorResponse, readForm } from "@/lib/api-errors.server";
 import { readImageField } from "@/lib/image.server";
 
@@ -9,6 +10,8 @@ export const runtime = "nodejs";
  * same orientation, same size, metadata (incl. GPS) stripped. No AI call, no API key involved.
  */
 export async function POST(request: Request) {
+  const blocked = guardRequest(request, "preview");
+  if (blocked) return blocked;
   const form = await readForm(request);
   if (form instanceof Response) return form;
 

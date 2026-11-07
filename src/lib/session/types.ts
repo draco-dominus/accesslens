@@ -62,6 +62,8 @@ export type Scan = {
   createdAt: number;
   step: ScanStep;
   error?: string;
+  /** False when retrying can't help (e.g. unsupported or oversized file). */
+  errorRetryable?: boolean;
   areaId: string | null;
   analysis: Analysis | null;
   analysisModel?: string;

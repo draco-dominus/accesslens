@@ -21,7 +21,7 @@ export function loadSession(): Session | null {
       scans: s.scans.map((sc) =>
         sc.step === "done" || sc.step === "error"
           ? sc
-          : { ...sc, step: "error", error: "This scan was interrupted when the page reloaded. Please scan again." },
+          : { ...sc, step: "error", error: "This scan was interrupted when the page reloaded. Please scan again.", errorRetryable: false },
       ),
     };
   } catch {

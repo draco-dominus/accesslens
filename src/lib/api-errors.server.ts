@@ -17,7 +17,8 @@ export function errorResponse(err: unknown, label: string) {
     }
     return fail(err.httpStatus, err.code, err.message);
   }
-  console.error(`[${label}] unexpected error`, err);
+  // No request data in logs: just the error type and a short message.
+  console.error(`[${label}] unexpected error`, err instanceof Error ? `${err.name}: ${err.message.slice(0, 200)}` : typeof err);
   return fail(500, "INTERNAL", "Something went wrong while processing the image.");
 }
 

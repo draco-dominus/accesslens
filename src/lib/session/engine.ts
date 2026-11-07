@@ -51,8 +51,8 @@ function updateScan(s: Session, scanId: string, fn: (scan: Scan) => Scan): Sessi
   return { ...s, scans: s.scans.map((sc) => (sc.id === scanId ? fn(sc) : sc)) };
 }
 
-export function setStep(s: Session, scanId: string, step: Scan["step"], error?: string): Session {
-  return updateScan(s, scanId, (sc) => ({ ...sc, step, error }));
+export function setStep(s: Session, scanId: string, step: Scan["step"], error?: string, errorRetryable?: boolean): Session {
+  return updateScan(s, scanId, (sc) => ({ ...sc, step, error, errorRetryable: step === "error" ? errorRetryable : undefined }));
 }
 
 export function setAnalysis(s: Session, scanId: string, analysis: Analysis, model: string): Session {
@@ -334,23 +334,10 @@ export function applyUserRevisit(
   }
   const applied = applyUpdates(s, scanId, updates, now);
   events.push(...applied.events);
-  let next = applied.session;
+  // No automatic merging here: two different barriers can share a type (e.g. two chairs). Possible
+  // duplicates are offered via duplicateSuggestions() and merged only after explicit confirmation.
 
-  // If a re-checked finding is still there and this scan recorded exactly one new finding of the same
-  // type, it's almost certainly the same barrier: merge it to avoid a duplicate.
-  for (const u of updates.filter((x) => x.status === "still_observed")) {
-    const existing = next.findings.find((f) => f.id === u.findingId)!;
-    const sameType = next.findings.filter(
-      (f) => f.firstScanId === scanId && f.history.length === 1 && f.details.barrierType === existing.details.barrierType,
-    );
-    if (sameType.length === 1) {
-      const dup = sameType[0];
-      next = { ...next, findings: next.findings.filter((f) => f.id !== dup.id) };
-      events.push({ kind: "notice", message: `Finding #${dup.number} is the same barrier as #${existing.number}, so I merged them.` });
-    }
-  }
-
-  next = updateScan(next, scanId, (sc) => ({
+  const next = updateScan(applied.session, scanId, (sc) => ({
     ...sc,
     areaId: earlier.areaId ?? sc.areaId,
     relations: [
@@ -362,6 +349,60 @@ export function applyUserRevisit(
     events: [...sc.events, ...events],
   }));
   return { ...next, areaCount: areaCount(next.scans) };
+}
+
+/**
+ * Possible duplicates the user may confirm, one specific pair at a time: a finding first recorded in
+ * `scanId` with the same barrier type as an earlier finding that a comparison in this same scan found
+ * still present. These are only suggestions; nothing is merged without confirmDuplicate().
+ */
+export function duplicateSuggestions(s: Session, scanId: string): { newFindingId: string; existingFindingId: string }[] {
+  const rechecked = s.findings.filter(
+    (f) =>
+      f.firstScanId !== scanId &&
+      f.status === "still_observed" &&
+      f.history.some((h) => h.scanId === scanId && h.source === "comparison" && h.status === "still_observed"),
+  );
+  const fresh = s.findings.filter((f) => f.firstScanId === scanId && f.history.length === 1);
+  return fresh.flatMap((n) =>
+    rechecked
+      .filter((e) => e.details.barrierType === n.details.barrierType)
+      .map((e) => ({ newFindingId: n.id, existingFindingId: e.id })),
+  );
+}
+
+/**
+ * The user confirmed that `newFindingId` (recorded in `scanId`) is the same barrier as `existingFindingId`.
+ * Only pairs offered by duplicateSuggestions() are accepted. The new finding is removed and every event
+ * that referenced it is dropped, so no event points at a deleted finding.
+ */
+export function confirmDuplicate(s: Session, scanId: string, newFindingId: string, existingFindingId: string, now: number): Session {
+  const allowed = duplicateSuggestions(s, scanId).some((p) => p.newFindingId === newFindingId && p.existingFindingId === existingFindingId);
+  if (!allowed) return s;
+  const dup = s.findings.find((f) => f.id === newFindingId)!;
+  const existing = s.findings.find((f) => f.id === existingFindingId)!;
+  const findings = s.findings
+    .filter((f) => f.id !== newFindingId)
+    .map((f) =>
+      f.id === existingFindingId
+        ? {
+            ...f,
+            lastSeenScanId: scanId,
+            history: [
+              ...f.history,
+              { scanId, at: now, status: f.status, source: "duplicate" as const, note: `You confirmed finding #${dup.number} was the same barrier, so it was merged into this one.` },
+            ],
+          }
+        : f,
+    );
+  const scans = s.scans.map((sc) => {
+    const events = sc.events.filter((e) => !("findingId" in e && e.findingId === newFindingId));
+    if (sc.id === scanId) {
+      events.push({ kind: "notice", message: `You confirmed finding #${dup.number} is the same barrier as #${existing.number}, so I merged them.` });
+    }
+    return { ...sc, events };
+  });
+  return { ...s, findings, scans };
 }
 
 export function declineRevisit(s: Session, scanId: string, earlierScanId: string): Session {

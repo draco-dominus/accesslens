@@ -1,3 +1,4 @@
+import { guardRequest } from "@/lib/request-guard.server";
 import { errorResponse, fail, readForm } from "@/lib/api-errors.server";
 import { applyComparisonGuardrails } from "@/lib/comparison-guardrails";
 import { MAX_CONCERN_LENGTH, type CompareSuccess } from "@/lib/comparison-schema";
@@ -12,6 +13,8 @@ const DISCLAIMER =
   "better in these photos. It does not mean the space is accessible or meets any standard. Confirm on site.";
 
 export async function POST(request: Request) {
+  const blocked = guardRequest(request, "compare");
+  if (blocked) return blocked;
   const form = await readForm(request);
   if (form instanceof Response) return form;
 
@@ -32,7 +35,7 @@ export async function POST(request: Request) {
     ]);
     const { model, comparison: raw } = await compareImages(before, after, concern);
     const { comparison, guardrail } = applyComparisonGuardrails(raw);
-    if (guardrail) console.info("[compare] guardrail applied:", JSON.stringify(guardrail));
+    if (guardrail) console.info("[compare]", JSON.stringify({ model, guardrail: guardrail.modelStatus, reasons: guardrail.reasons.length }));
 
     return Response.json({
       ok: true,

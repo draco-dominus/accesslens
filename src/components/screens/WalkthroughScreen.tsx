@@ -3,7 +3,7 @@
 import { useState } from "react";
 import type { useWalkthrough } from "@/hooks/useWalkthrough";
 import { canFinish } from "@/lib/session/engine";
-import { areaOf, areas } from "@/lib/session/areas";
+import { areaOf, areas, recheckOutcome } from "@/lib/session/areas";
 import { progressLine, scanActivity, walkthroughSummary } from "@/lib/session/lumi";
 import { isOpen, type Session, type TrackedFinding } from "@/lib/session/types";
 import { Sidekick } from "../lumi/Sidekick";
@@ -135,7 +135,9 @@ export function WalkthroughScreen({
               const areaFindings = session.findings.filter((f) => ids.has(f.firstScanId));
               const openHere = areaFindings.filter((f) => isOpen(f.status)).length;
               const improvedHere = areaFindings.filter((f) => f.status === "appears_improved").length;
-              const rechecks = area.scans.filter((sc) => sc.lineUpScanId).length;
+              // Re-checks filed with this area (a rejected re-check starts its own area instead).
+              const rechecks = area.scans.filter((sc) => sc !== first && sc.lineUpScanId).length;
+              const unmatched = recheckOutcome(first) === "rejected" ? session.scans.find((sc) => sc.id === first.lineUpScanId) : undefined;
               const working = area.scans.find((sc) => sc.step !== "done" && sc.step !== "error");
               const failed = area.scans.some((sc) => sc.step === "error");
               const status = working
@@ -145,6 +147,7 @@ export function WalkthroughScreen({
                     openHere ? `${openHere} open` : null,
                     improvedHere ? `${improvedHere} appear improved` : null,
                     rechecks ? `re-checked ${rechecks === 1 ? "once" : `${rechecks} times`}` : null,
+                    unmatched ? `re-check didn’t match Area ${areaOf(session, unmatched.id)?.number ?? "?"}` : null,
                     failed ? "a scan didn’t finish" : null,
                   ]
                     .filter(Boolean)

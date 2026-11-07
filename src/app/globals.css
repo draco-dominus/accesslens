@@ -577,8 +577,15 @@
     background: #fff !important;
     padding: 0 !important;
   }
+  main {
+    place-items: normal !important;
+  }
+  /* The on-screen frame is a size container centered by its parent; in print that combination
+     collapses it to zero width (the report printed as a thin column). Make it a plain full-width block. */
   .device {
-    width: auto !important;
+    container-type: normal !important;
+    justify-self: stretch !important;
+    width: 100% !important;
     height: auto !important;
     overflow: visible !important;
     border-radius: 0 !important;

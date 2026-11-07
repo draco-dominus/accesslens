@@ -213,14 +213,14 @@ export function AccessLensApp() {
               }}
             />
           )}
-          {screen === "report" && session && <InspectionReport session={session} media={wt.media} onBack={() => go(reportReturn)} />}
+          {screen === "report" && session && <InspectionReport session={session} media={wt.media} photoRestore={wt.photoRestore} onBack={() => go(reportReturn)} />}
         </div>
 
         {/* Simulated status bar + Dynamic Island, framed desktop preview only (from the prototype). */}
         <div
           aria-hidden
           data-theme={chromeTheme}
-          className="pointer-events-none absolute inset-x-0 top-0 z-50 hidden h-[50px] items-center justify-between px-9 pt-1 text-fg sm:flex"
+          className="no-print pointer-events-none absolute inset-x-0 top-0 z-50 hidden h-[50px] items-center justify-between px-9 pt-1 text-fg sm:flex"
         >
           <span className="w-14 text-[15px] font-semibold tracking-[-0.01em]">9:41</span>
           <span className="absolute top-[11px] left-1/2 h-[34px] w-[122px] -translate-x-1/2 rounded-full bg-black" />

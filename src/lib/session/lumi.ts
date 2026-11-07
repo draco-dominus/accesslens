@@ -44,6 +44,10 @@ function eventText(s: Session, scan: Scan, e: ScanEvent, isFirstFindingOfSession
         : `We've also found ${findingName(finding!)} (${finding!.details.locationInImage}).`;
     case "seen_again":
       return `The ${findingName(finding!)} I noticed earlier still appears in this photo.`;
+    case "rechecked":
+      return e.status === "needs_verification"
+        ? `I compared the ${findingName(finding!)} with ${scanLabel(s, e.referenceScanId)} again, and still couldn't confirm a change.`
+        : `I compared the ${findingName(finding!)} with ${scanLabel(s, e.referenceScanId)} again: ${STATUS_LABEL[e.status].toLowerCase()}.`;
     case "status_change": {
       const last = finding!.history.filter((h) => h.scanId === scan.id).at(-1);
       const where = scanLabel(s, e.referenceScanId);

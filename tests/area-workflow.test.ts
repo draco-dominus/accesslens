@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { areaOf, areas, recheckTarget } from "../src/lib/session/areas";
+import { areaOf, areas, recheckOutcome, recheckTarget } from "../src/lib/session/areas";
 import * as E from "../src/lib/session/engine";
 import { runScanPipeline, type PipelineDeps } from "../src/lib/session/pipeline";
 import type { Session } from "../src/lib/session/types";
@@ -124,11 +124,13 @@ describe("re-check this area", () => {
     assert.deepEqual(s.findings.filter((f) => f.id !== "C-f0").map((f) => f.status), ["observed", "observed"], "A and B untouched");
   });
 
-  it("a re-check whose photos show a different place changes nothing, and is still filed under that area", async () => {
+  it("a re-check whose photos show a different place changes nothing and is NOT filed under that area", async () => {
     const { s: before } = await threeAreas();
     const { s } = await scan(before, "C2", { findings: [], compare: "improved", sameLocation: "no" }, "C");
     assert.equal(s.findings.find((f) => f.id === "C-f0")!.status, "observed");
-    assert.equal(areaOf(s, "C2")!.number, 3);
+    assert.equal(recheckOutcome(s.scans.find((x) => x.id === "C2")!), "rejected");
+    assert.equal(areaOf(s, "C2")!.number, 4, "its own area, not Area 3");
+    assert.equal(areaOf(s, "C")!.scans.length, 1);
   });
 
   it("nothing to re-check when the area has no open findings or no photo", async () => {

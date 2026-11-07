@@ -1,6 +1,8 @@
 "use client";
 
+import { useState } from "react";
 import type { ScanMedia } from "@/hooks/useWalkthrough";
+import { reportPhotoIds, reportPhotoStatus } from "@/lib/session/report";
 import { STATUS_LABEL, walkthroughSummary } from "@/lib/session/lumi";
 import type { Session, TrackedFinding } from "@/lib/session/types";
 import { Sidekick } from "../lumi/Sidekick";
@@ -8,8 +10,34 @@ import { ChevronLeft, Print } from "../ui/Icons";
 import { Button } from "../ui/primitives";
 import { StatusTag } from "../ui/Tags";
 
-export function InspectionReport({ session, media, onBack }: { session: Session; media: Record<string, ScanMedia>; onBack: () => void }) {
+export function InspectionReport({
+  session,
+  media,
+  photoRestore,
+  onBack,
+}: {
+  session: Session;
+  media: Record<string, ScanMedia>;
+  photoRestore: "idle" | "loading" | "ready" | "unavailable";
+  onBack: () => void;
+}) {
   const summary = walkthroughSummary(session);
+  const photos = reportPhotoStatus(session, (id) => Boolean(media[id]?.imageUrl ?? media[id]?.thumbUrl), photoRestore);
+  const [printing, setPrinting] = useState(false);
+  const list = (ns: number[]) => (ns.length === 1 ? `scan ${ns[0]}` : `scans ${ns.slice(0, -1).join(", ")} and ${ns.at(-1)}`);
+
+  /** Print only once every photo in the report has actually decoded (restored blobs can lag a moment). */
+  const exportPdf = async () => {
+    if (photos.state === "restoring" || printing) return;
+    setPrinting(true);
+    try {
+      const imgs = [...document.querySelectorAll<HTMLImageElement>(".report-screen img")];
+      await Promise.all(imgs.map((img) => (img.complete && img.naturalWidth ? null : img.decode().catch(() => null))));
+      window.print();
+    } finally {
+      setPrinting(false);
+    }
+  };
   const date = new Intl.DateTimeFormat(undefined, { dateStyle: "long", timeStyle: "short" }).format(new Date(session.startedAt));
 
   return (
@@ -18,13 +46,21 @@ export function InspectionReport({ session, media, onBack }: { session: Session;
         <button type="button" onClick={onBack} className="pressable inline-flex min-h-11 items-center gap-1 rounded-full px-2 text-[15px] font-semibold">
           <ChevronLeft size={18} /> Back
         </button>
-        <Button size="md" onClick={() => window.print()} icon={<Print size={17} />}>
-          Download PDF
+        <Button size="md" onClick={exportPdf} disabled={photos.state === "restoring" || printing} icon={<Print size={17} />}>
+          {photos.state === "restoring" ? "Restoring photos…" : printing ? "Preparing…" : "Download PDF"}
         </Button>
       </div>
-      <p className="no-print mt-2 px-2 text-right text-[12px] leading-snug text-muted">
-        Opens the print sheet: choose Save as PDF. On iPhone, use Share, then Save to Files.
-      </p>
+      <div className="no-print" aria-live="polite">
+        {photos.state === "restoring" && (
+          <p className="mt-2 rounded-2xl bg-surface-2 px-3 py-2 text-[13px] leading-snug">Loading this inspection’s photos from your device. The PDF will be ready in a moment.</p>
+        )}
+        {photos.state === "missing" && (
+          <p role="alert" className="mt-2 rounded-2xl bg-[color-mix(in_srgb,var(--color-caution)_16%,transparent)] px-3 py-2 text-[13px] leading-snug">
+            The photo{photos.missingScanNumbers.length > 1 ? "s" : ""} from {list(photos.missingScanNumbers)} {photos.missingScanNumbers.length > 1 ? "aren’t" : "isn’t"} available on this device. The PDF will include those findings and say the photo is missing.
+          </p>
+        )}
+        <p className="mt-2 px-2 text-right text-[12px] leading-snug text-muted">Opens the print sheet: choose Save as PDF. On iPhone, use Share, then Save to Files.</p>
+      </div>
 
       <header className="mt-5 border-b border-line pb-6 print:mt-0">
         <div className="flex items-start gap-4">
@@ -71,12 +107,12 @@ export function InspectionReport({ session, media, onBack }: { session: Session;
 function ReportFinding({ session, finding, media }: { session: Session; finding: TrackedFinding; media: Record<string, ScanMedia> }) {
   const d = finding.details;
   const latestEvent = finding.history.at(-1);
-  const photoIds = [...new Set([finding.firstScanId, latestEvent?.scanId].filter((id): id is string => Boolean(id)))];
-  const photos = photoIds.flatMap((id) => {
+  const expected = reportPhotoIds(finding).flatMap((id) => {
     const scan = session.scans.find((item) => item.id === id);
-    const url = media[id]?.imageUrl ?? media[id]?.thumbUrl;
-    return scan && url ? [{ id, number: scan.number, url }] : [];
+    return scan ? [{ id, number: scan.number, url: media[id]?.imageUrl ?? media[id]?.thumbUrl }] : [];
   });
+  const photos = expected.filter((p): p is typeof p & { url: string } => Boolean(p.url));
+  const missing = expected.filter((p) => !p.url);
 
   return (
     <li className="break-inside-avoid rounded-[26px] bg-surface p-5 shadow-[var(--shadow-soft)]">
@@ -98,6 +134,12 @@ function ReportFinding({ session, finding, media }: { session: Session; finding:
             </figure>
           ))}
         </div>
+      )}
+
+      {missing.length > 0 && (
+        <p className="mt-3 text-[12px] leading-snug text-muted">
+          Photo from {missing.map((p) => `scan ${p.number}`).join(" and ")} not available on this device.
+        </p>
       )}
 
       <dl className="mt-4 space-y-3 text-[14px] leading-relaxed">

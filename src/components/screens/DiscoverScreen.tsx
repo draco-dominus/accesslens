@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { retryKey, type useWalkthrough } from "@/hooks/useWalkthrough";
-import { areaOf, recheckTarget } from "@/lib/session/areas";
+import { areaOf, recheckOutcome, recheckTarget } from "@/lib/session/areas";
 import { findingsForScan, recheckHeadline, scanActivity, STATUS_LABEL } from "@/lib/session/lumi";
 import type { Scan, TrackedFinding } from "@/lib/session/types";
 import { spatialBoxes } from "@/lib/spatial";
@@ -56,8 +56,10 @@ export function DiscoverScreen({
   const area = areaOf(session, scan.id);
   const items = findingsForScan(session, scan.id);
   const target = !processing && !checking ? recheckTarget(session, scan.id, wt.hasImage) : null;
-  const isRecheck = Boolean(scan.lineUpScanId);
-  const recheckOf = isRecheck ? session.scans.find((s) => s.id === scan.lineUpScanId) : undefined;
+  const outcome = recheckOutcome(scan);
+  const isRecheck = outcome === "pending" || outcome === "matched";
+  const recheckOf = scan.lineUpScanId ? session.scans.find((s) => s.id === scan.lineUpScanId) : undefined;
+  const recheckOfArea = recheckOf ? areaOf(session, recheckOf.id)?.number : undefined;
   const notices = scan.step === "done" ? scan.events.flatMap((e) => (e.kind === "notice" ? [e.message] : [])) : [];
   const [viewer, setViewer] = useState(false);
   const [trustOpen, setTrustOpen] = useState(false);
@@ -83,7 +85,7 @@ export function DiscoverScreen({
           <div className="min-w-0 flex-1 px-1">
             <h1 className="text-[20px] leading-tight font-semibold tracking-[-0.02em]">Area {area?.number ?? "?"}</h1>
             <p className="text-[13px] leading-tight text-muted">
-              {isRecheck ? `Re-check · scan ${scan.number}` : `Scan ${scan.number}`}
+              {isRecheck ? `Re-check · scan ${scan.number}` : outcome === "rejected" ? `Scan ${scan.number} · didn’t match Area ${recheckOfArea ?? "?"}` : `Scan ${scan.number}`}
             </p>
           </div>
           <GlassIconButton onClick={() => onAsk(items[0]?.finding.id)} aria-label="Ask Lumi">

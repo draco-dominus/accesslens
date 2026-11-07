@@ -22,6 +22,11 @@ export function applyComparisonGuardrails(c: Comparison): { comparison: Comparis
   }
 
   if (c.status === "improved") {
+    // Declaring a fix needs a confident same-place match; "likely" isn't enough.
+    // (Observed: Gemma rated two different cities' staircases as "likely" the same place.)
+    if (c.sameLocation === "likely") {
+      reasons.push("The photos weren't confirmed to show the same place, so a fix can't be confirmed.");
+    }
     if (c.beforeBarrierVisible === "no") {
       reasons.push("The described barrier couldn't be found in the BEFORE photo, so a change can't be confirmed.");
     }

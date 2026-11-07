@@ -76,7 +76,8 @@ async function decodeHeicToSharp(buf: Buffer): Promise<ReturnType<typeof sharp>>
   }
 }
 
-export async function normalizeImage(buf: Buffer): Promise<NormalizedImage> {
+export async function normalizeImage(buf: Buffer, opts: { maxEdge?: number } = {}): Promise<NormalizedImage> {
+  const maxEdge = Math.min(opts.maxEdge ?? MAX_EDGE, MAX_EDGE);
   if (buf.length === 0) throw new ImageError("EMPTY_IMAGE", "The uploaded file is empty.", 400);
   if (buf.length > MAX_UPLOAD_BYTES) {
     throw new ImageError("IMAGE_TOO_LARGE", "Image is larger than 20 MB. Please upload a smaller photo.", 413);
@@ -98,7 +99,7 @@ export async function normalizeImage(buf: Buffer): Promise<NormalizedImage> {
         : sharp(buf, { limitInputPixels: MAX_INPUT_PIXELS, failOn: "error" }).rotate(); // EXIF orientation
 
     const { data, info } = await pipeline
-      .resize(MAX_EDGE, MAX_EDGE, { fit: "inside", withoutEnlargement: true })
+      .resize(maxEdge, maxEdge, { fit: "inside", withoutEnlargement: true })
       .flatten({ background: "#ffffff" })
       .jpeg({ quality: 85 })
       .toBuffer({ resolveWithObject: true }); // sharp drops all metadata unless asked to keep it
@@ -115,7 +116,12 @@ export async function normalizeImage(buf: Buffer): Promise<NormalizedImage> {
 }
 
 /** Read a multipart field, verify it is a file, and normalize it. */
-export async function readImageField(form: FormData, field: string, label = field): Promise<NormalizedImage> {
+export async function readImageField(
+  form: FormData,
+  field: string,
+  label = field,
+  opts: { maxEdge?: number } = {},
+): Promise<NormalizedImage> {
   const file = form.get(field);
   if (!(file instanceof File)) {
     throw new ImageError("NO_IMAGE", `No ${label} image uploaded (expected form field '${field}').`, 400);
@@ -124,5 +130,5 @@ export async function readImageField(form: FormData, field: string, label = fiel
   if (file.size > MAX_UPLOAD_BYTES) {
     throw new ImageError("IMAGE_TOO_LARGE", `The ${label} image is larger than 20 MB.`, 413);
   }
-  return normalizeImage(Buffer.from(await file.arrayBuffer()));
+  return normalizeImage(Buffer.from(await file.arrayBuffer()), opts);
 }

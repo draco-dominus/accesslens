@@ -75,7 +75,7 @@ export default function ComparePage() {
     <main className="mx-auto w-full max-w-xl flex-1 p-4 font-sans">
       <nav className="mb-2 text-sm">
         <Link href="/" className="underline">
-          ← Single photo analysis
+          ← AccessLens (developer comparison tool)
         </Link>
       </nav>
       <h1 className="text-2xl font-bold">Before &amp; after check</h1>

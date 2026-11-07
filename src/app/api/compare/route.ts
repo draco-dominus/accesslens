@@ -32,7 +32,7 @@ export async function POST(request: Request) {
     ]);
     const { model, comparison: raw } = await compareImages(before, after, concern);
     const { comparison, guardrail } = applyComparisonGuardrails(raw);
-    if (guardrail) console.info("[compare] guardrail applied:", guardrail);
+    if (guardrail) console.info("[compare] guardrail applied:", JSON.stringify(guardrail));
 
     return Response.json({
       ok: true,

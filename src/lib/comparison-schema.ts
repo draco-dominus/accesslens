@@ -9,7 +9,32 @@ export type ComparisonStatus = (typeof COMPARISON_STATUSES)[number];
 
 const Visibility = z.enum(["yes", "partially", "no"]);
 
+// Field order matters: models generate JSON in schema order, so evidence fields come BEFORE the
+// judgments that depend on them (describe each scene → compare fixed features → decide same place →
+// check visibility → decide status).
 export const ComparisonSchema = z.object({
+  beforeScene: z
+    .string()
+    .min(1)
+    .describe("Describe the BEFORE photo on its own: the kind of place and its distinctive fixed features."),
+  afterScene: z
+    .string()
+    .min(1)
+    .describe("Describe the AFTER photo on its own, WITHOUT assuming it is the same place as BEFORE."),
+  locationEvidence: z
+    .string()
+    .min(1)
+    .describe(
+      "List specific fixed features (buildings, walls, doors, windows, counters, floor/paving pattern, signs) and say for each whether it appears in BOTH photos. Note any clear mismatches.",
+    ),
+  sameLocation: z
+    .enum(["yes", "likely", "unclear", "no"])
+    .describe(
+      "Do both photos show the same place? 'yes' only if several specific fixed features clearly match. 'no' if fixed features clearly differ. Similar-looking kinds of places (e.g. two different staircases) are NOT the same place.",
+    ),
+  viewpoint: z
+    .enum(["similar", "different", "unclear"])
+    .describe("Were the photos taken from a similar camera position and angle?"),
   originalBarrier: z
     .string()
     .min(1)
@@ -18,18 +43,8 @@ export const ComparisonSchema = z.object({
     "Is the described barrier actually visible in the BEFORE photo? 'no' if you cannot find it there.",
   ),
   afterAreaVisible: Visibility.describe(
-    "Is the SAME AREA where the barrier was located clearly visible in the AFTER photo? 'no' if that spot is out of frame, cropped, hidden, or too blurry/dark to check.",
+    "Is the SAME AREA where the barrier was located clearly visible in the AFTER photo? 'no' if that spot is out of frame, cropped, hidden, or too blurry/dark to check, or if AFTER shows a different place.",
   ),
-  sameLocation: z
-    .enum(["yes", "likely", "unclear", "no"])
-    .describe("Do both photos show the same place? Base this on fixed features (walls, doors, floor pattern, fixtures)."),
-  viewpoint: z
-    .enum(["similar", "different", "unclear"])
-    .describe("Were the photos taken from a similar camera position and angle?"),
-  locationEvidence: z
-    .string()
-    .min(1)
-    .describe("Fixed features that match (or don't match) between the two photos, supporting the sameLocation answer."),
   observedChange: z
     .string()
     .min(1)

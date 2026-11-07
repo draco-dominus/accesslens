@@ -298,11 +298,19 @@ export function integrateScan(
      * same spot, and "different place" leaves the earlier findings untouched.
      */
     lineUpScanId?: string;
+    /**
+     * "new_area": the user chose Scan new area. A scene match is then only a SUGGESTION ("this looks like
+     * Area N — re-check it?"): the scan starts its own area, no revisit is claimed, nothing is compared or
+     * merged, and unclear/failed matches aren't raised at all. Omitted: legacy automatic behaviour (kept
+     * for the engine's own rules and tests; the app always passes the intent).
+     */
+    intent?: "new_area" | "recheck";
   },
   now: number,
 ): Session {
   const scan = getScan(s, scanId);
   if (!scan?.analysis) return s;
+  if (input.intent === "new_area" && !input.lineUpScanId) return integrateNewArea(s, scanId, input, now);
   const analysis = scan.analysis;
   const events: ScanEvent[] = [];
   const lineUp = input.lineUpScanId && getScan(s, input.lineUpScanId) ? input.lineUpScanId : undefined;
@@ -421,6 +429,65 @@ export function integrateScan(
     pendingRevisit,
     comparedWith: [...new Set(succeededRefs(input.comparisons))],
     failedComparisons: failuresOf(input.comparisons, lineUp ? "lineup" : "auto"),
+    events,
+    doneAt: now,
+  }));
+  return { ...next, areaCount: areaCount(next.scans) };
+}
+
+/**
+ * A scan the user took as a NEW area. New findings are recorded; earlier findings are never touched.
+ * Scene-match verdicts of "yes"/"likely" become a non-blocking suggestion (pendingRevisit), which the user
+ * may accept (→ applyUserRevisit, with real comparisons) or dismiss (→ declineRevisit).
+ */
+function integrateNewArea(
+  s: Session,
+  scanId: string,
+  input: { match: MatchSuccess | null; newFindingIds: string[] },
+  now: number,
+): Session {
+  const scan = getScan(s, scanId)!;
+  const analysis = scan.analysis!;
+  const events: ScanEvent[] = [];
+  const relations: ScanRelation[] = (input.match?.candidates ?? []).map((c) => ({
+    scanId: c.scanId,
+    sameArea: c.sameArea,
+    sceneVerdict: c.sameArea,
+    decidedBy: "auto" as const,
+    evidence: c.evidence,
+  }));
+  const suggested = analysis.imageUsable
+    ? relations.filter((r) => r.sameArea === "yes" || r.sameArea === "likely").map((r) => r.scanId)
+    : [];
+
+  const maxNumber = s.findings.reduce((m, f) => Math.max(m, f.number), 0);
+  const added: TrackedFinding[] = analysis.findings.map((details, i) => {
+    const id = input.newFindingIds[i];
+    events.push({ kind: "new_finding", findingId: id });
+    return {
+      id,
+      number: maxNumber + i + 1,
+      details,
+      status: "observed",
+      firstScanId: scanId,
+      lastSeenScanId: scanId,
+      history: [{ scanId, at: now, status: "observed", source: "analysis", note: details.visualEvidence, model: scan.analysisModel }],
+    };
+  });
+  if (!analysis.imageUsable) events.push({ kind: "image_unusable", reason: analysis.limitations });
+  else if (analysis.findings.length === 0) events.push({ kind: "no_findings" });
+  if (suggested.length) events.push({ kind: "revisit_question", scanIds: suggested });
+
+  let next: Session = { ...s, findings: [...s.findings, ...added] };
+  next = updateScan(next, scanId, (sc) => ({
+    ...sc,
+    step: "done",
+    error: undefined,
+    areaId: `area-${scanId}`,
+    relations,
+    pendingRevisit: suggested,
+    comparedWith: [],
+    failedComparisons: [],
     events,
     doneAt: now,
   }));

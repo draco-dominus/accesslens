@@ -1,30 +1,45 @@
 "use client";
 
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { flushSync } from "react-dom";
 import { useWalkthrough } from "@/hooks/useWalkthrough";
-import { isOpen } from "@/lib/session/types";
 import { DiscoverScreen } from "../screens/DiscoverScreen";
+import { FindingDetailScreen, isRecheckable } from "../screens/FindingDetailScreen";
+import { InspectionReport } from "../screens/InspectionReport";
 import { ScanScreen } from "../screens/ScanScreen";
-import { UnderstandScreen } from "../screens/UnderstandScreen";
 import { WalkthroughScreen } from "../screens/WalkthroughScreen";
 import { WelcomeScreen } from "../screens/WelcomeScreen";
-import { Chat, Close, Pin, Route, Scan } from "../ui/Icons";
+import { AskLumiScreen } from "../lumi/LumiPanel";
+import { Chat, Close, Home, Pin, Route, Scan } from "../ui/Icons";
 import { GlassIconButton } from "../ui/primitives";
 
 /**
  * AccessLens app shell, adapted from the Figma prototype's App.tsx.
- * Journey: Welcome → Start walkthrough → Scan → Discover → Understand → Scan again → Review walkthrough.
- * All data comes from useWalkthrough (real API calls + session engine); nothing here is mocked.
+ * Journey: Home → Scan new area → Analyzing → Area (photo + findings) → Finding details → Re-check this area
+ * → Before/after → Review → Report. "Scan new area" and "Re-check this area" are separate, explicit
+ * operations. Ask Lumi is its own destination. All data comes from useWalkthrough (real API calls +
+ * session engine); nothing here is mocked.
  */
 
 export type Theme = "light" | "dark";
-type Screen = "welcome" | "scan" | "discover" | "ask" | "walkthrough";
+type Screen = "welcome" | "scan" | "discover" | "finding" | "ask" | "walkthrough" | "report";
 
 const NAV = [
   { id: "discover", label: "Findings", icon: Pin },
-  { id: "ask", label: "Ask", icon: Chat },
   { id: "walkthrough", label: "Walkthrough", icon: Route },
 ] as const;
+
+/**
+ * Screen changes use the View Transitions API where available (Safari 18+, Chrome), so the scanned photo
+ * morphs between screens (`view-transition-name: scan-photo`). Falls back to the CSS screen animation;
+ * skipped entirely when the user prefers reduced motion.
+ */
+function withTransition(update: () => void) {
+  const doc = document as Document & { startViewTransition?: (cb: () => void) => unknown };
+  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (doc.startViewTransition && !reduced) doc.startViewTransition(() => flushSync(update));
+  else update();
+}
 
 function subscribeScheme(cb: () => void) {
   const mq = window.matchMedia("(prefers-color-scheme: dark)");
@@ -42,9 +57,14 @@ export function AccessLensApp() {
   const [screen, setScreen] = useState<Screen>("welcome");
   const [returnTo, setReturnTo] = useState<Screen>("welcome");
   const [scanId, setScanId] = useState<string | null>(null);
-  const [freshScanId, setFreshScanId] = useState<string | null>(null);
   const [findingId, setFindingId] = useState<string | null>(null);
-  const [lineUpTarget, setLineUpTarget] = useState<string | undefined>();
+  /** Set only by "Re-check this area": the earlier scan the camera lines up with. */
+  const [recheckScanId, setRecheckScanId] = useState<string | undefined>();
+  const [lumiFindingId, setLumiFindingId] = useState<string | null>(null);
+  const [askReturn, setAskReturn] = useState<Screen>("welcome");
+  const [reportReturn, setReportReturn] = useState<Screen>("welcome");
+  /** Finding Details: which finding, seen from which scan's photo, optionally at the comparison. */
+  const [detail, setDetail] = useState<{ findingId: string; scanId: string; section?: "compare" } | null>(null);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -55,15 +75,15 @@ export function AccessLensApp() {
   const latestScan = scans.at(-1) ?? null;
   const currentScan = scans.find((s) => s.id === scanId) ?? latestScan;
   const hasScans = scans.length > 0;
-  const hasFindings = (session?.findings.length ?? 0) > 0;
 
-  const go = useCallback((s: Screen) => setScreen(s), []);
+  const go = useCallback((s: Screen) => withTransition(() => setScreen(s)), []);
   const toggleTheme = () => setOverride(theme === "dark" ? "light" : "dark");
 
-  /** Open the camera. `lineUp`: pre-select an earlier scan to line up with (re-checking a finding). */
-  const startScan = (lineUp?: string) => {
-    setLineUpTarget(typeof lineUp === "string" ? lineUp : undefined);
+  /** Open the camera: a new area by default, or a re-check lined up with `recheck`'s photo. */
+  const startScan = (recheck?: string) => {
+    setRecheckScanId(typeof recheck === "string" ? recheck : undefined);
     if (!session) wt.start();
+    else if (session.finishedAt !== null) wt.resume();
     setReturnTo(screen === "scan" ? returnTo : screen);
     go("scan");
   };
@@ -71,80 +91,102 @@ export function AccessLensApp() {
   const onCaptured = (file: File, lineUpScanId?: string) => {
     const id = wt.scanFile(file, { lineUpScanId });
     setScanId(id);
-    setFreshScanId(id);
     setFindingId(null);
     go("discover");
   };
 
-  const openScan = (id: string, finding?: string) => {
+  /** An area's photo and findings. */
+  const openScan = (id: string) => {
     setScanId(id);
-    setFreshScanId(null);
-    setFindingId(finding ?? null);
     go("discover");
   };
 
-  const askAbout = (id: string) => {
+  /** Finding Details, seen from a scan's photo (defaults to where the finding was last seen). */
+  const openFinding = (id: string, fromScanId?: string, section?: "compare") => {
+    const f = session?.findings.find((x) => x.id === id);
+    if (!f) return;
     setFindingId(id);
+    setDetail({ findingId: id, scanId: fromScanId ?? f.lastSeenScanId, section });
+    go("finding");
+  };
+
+  /** Back from details: the area page it was opened from. */
+  const backToArea = () => {
+    if (detail) openScan(detail.scanId);
+    else go("discover");
+  };
+
+  const openLumi = (id?: string) => {
+    const preferred = id ?? findingId ?? [...(session?.findings ?? [])].reverse().find((finding) => finding.status !== "appears_improved")?.id ?? session?.findings.at(-1)?.id ?? null;
+    setLumiFindingId(preferred);
+    setAskReturn(screen === "ask" ? askReturn : screen);
     go("ask");
   };
 
-  // Ask defaults to the selected finding, else the most recent open one, else the latest one.
-  const askFindingId =
-    findingId ??
-    [...(session?.findings ?? [])].reverse().find((f) => isOpen(f.status))?.id ??
-    session?.findings.at(-1)?.id ??
-    null;
+  const openReport = () => {
+    setReportReturn(screen === "report" ? reportReturn : screen);
+    go("report");
+  };
+
+  const detailFinding = detail ? session?.findings.find((f) => f.id === detail.findingId) : undefined;
 
   // Camera-led screens are always dark; others follow the chosen appearance.
-  const chromeTheme: Theme = screen === "scan" || screen === "discover" ? "dark" : theme;
+  const chromeTheme: Theme = screen === "scan" ? "dark" : theme;
 
   return (
     <main className="grid min-h-dvh place-items-center bg-[#e8e8ea] transition-colors duration-500 dark:bg-[#050505] sm:p-6">
       <div
-        className="device relative h-dvh w-full overflow-hidden bg-bg text-fg sm:h-[min(880px,calc(100dvh-48px))] sm:w-[410px] sm:rounded-[56px] sm:shadow-[0_0_0_11px_#0a0a0a,0_0_0_12.5px_#3a3a3c,0_40px_100px_-20px_rgba(0,0,0,0.45)]"
+        className="device relative h-dvh w-full overflow-clip bg-bg text-fg sm:h-[min(880px,calc(100dvh-48px))] sm:w-[410px] sm:rounded-[56px] sm:shadow-[0_0_0_11px_#0a0a0a,0_0_0_12.5px_#3a3a3c,0_40px_100px_-20px_rgba(0,0,0,0.45)]"
         style={{ containerType: "size" }}
       >
-        <div key={screen} className="animate-screen-in absolute inset-0">
+        <div key={screen} className="screen-host animate-screen-in absolute inset-0">
           {screen === "welcome" && (
             <WelcomeScreen
+              session={session}
               theme={theme}
               onToggleTheme={toggleTheme}
-              canContinue={hasScans}
-              onStart={() => {
-                if (hasScans) wt.reset();
-                wt.start();
-                setScanId(null);
-                setFindingId(null);
-                setReturnTo("welcome");
-                go("scan");
-              }}
-              onContinue={() => go("walkthrough")}
+              onScan={() => startScan()}
+              onResume={() => latestScan && openScan(latestScan.id)}
+              onReview={() => go("walkthrough")}
+              onAsk={() => openLumi()}
+              onReport={() => openReport()}
             />
           )}
-          {screen === "scan" && <ScanScreen wt={wt} onCapture={onCaptured} initialLineUpScanId={lineUpTarget} />}
+          {screen === "scan" && <ScanScreen key={recheckScanId ?? "new"} wt={wt} onCapture={onCaptured} recheckScanId={recheckScanId} />}
           {screen === "discover" && currentScan && (
             <DiscoverScreen
               key={currentScan.id}
               wt={wt}
               scan={currentScan}
-              fresh={freshScanId === currentScan.id}
-              theme={theme}
-              selectedFindingId={findingId}
-              onSelectFinding={setFindingId}
-              onAsk={askAbout}
+              onOpenFinding={(id, section) => openFinding(id, currentScan.id, section)}
               onOpenScan={openScan}
-              onScanAgain={() => startScan()}
+              onScanNewArea={() => startScan()}
               onRecheck={(id) => startScan(id)}
-              onOpenWalkthrough={() => go("walkthrough")}
+              onReview={() => go("walkthrough")}
+              onAsk={(id) => openLumi(id)}
+              onHome={() => go("welcome")}
             />
           )}
-          {screen === "ask" && session && askFindingId && (
-            <UnderstandScreen
-              key={askFindingId}
+          {screen === "finding" && detail && detailFinding && (
+            <FindingDetailScreen
+              key={`${detail.findingId}:${detail.scanId}:${detail.section ?? ""}`}
               wt={wt}
-              findingId={askFindingId}
-              onOpenScan={openScan}
-              onPickFinding={setFindingId}
+              finding={detailFinding}
+              scanId={detail.scanId}
+              section={detail.section}
+              onBack={backToArea}
+              onAsk={() => openLumi(detailFinding.id)}
+              onRecheck={isRecheckable(wt, detailFinding) ? () => startScan(detailFinding.lastSeenScanId) : undefined}
+            />
+          )}
+          {screen === "ask" && (
+            <AskLumiScreen
+              session={session}
+              findingId={lumiFindingId}
+              onFindingChange={setLumiFindingId}
+              onBack={() => go(askReturn === "ask" || askReturn === "scan" ? (hasScans ? "discover" : "welcome") : askReturn)}
+              onOpenFinding={(finding) => openFinding(finding.id)}
+              onScan={() => startScan()}
             />
           )}
           {screen === "walkthrough" && (
@@ -152,8 +194,9 @@ export function AccessLensApp() {
               wt={wt}
               theme={theme}
               onToggleTheme={toggleTheme}
-              onScan={startScan}
-              onOpenScan={openScan}
+              onScan={() => startScan()}
+              onOpenScan={(id, finding) => (finding ? openFinding(finding, id) : openScan(id))}
+              onReport={() => openReport()}
               onRestart={() => {
                 wt.reset();
                 setScanId(null);
@@ -162,6 +205,7 @@ export function AccessLensApp() {
               }}
             />
           )}
+          {screen === "report" && session && <InspectionReport session={session} media={wt.media} onBack={() => go(reportReturn)} />}
         </div>
 
         {/* Simulated status bar + Dynamic Island, framed desktop preview only (from the prototype). */}
@@ -187,13 +231,13 @@ export function AccessLensApp() {
           </span>
         </div>
 
-        {screen !== "welcome" && (
+        {(screen === "scan" || screen === "walkthrough") && (
           <nav
             data-theme={chromeTheme}
             aria-label="AccessLens"
-            className="absolute inset-x-0 top-[var(--safe-top)] z-40 flex items-center justify-between gap-2 px-4 text-fg"
+            className="no-print absolute inset-x-0 top-[var(--safe-top)] z-40 flex items-center justify-between gap-2 px-4 text-fg"
           >
-            {(screen === "ask" || screen === "walkthrough") && (
+            {screen === "walkthrough" && (
               <div
                 aria-hidden
                 className="pointer-events-none absolute inset-x-0 -top-[var(--safe-top)] -z-10 h-[calc(var(--safe-top)+64px)] bg-[linear-gradient(to_bottom,var(--bg)_55%,transparent)]"
@@ -209,10 +253,16 @@ export function AccessLensApp() {
               </GlassIconButton>
             )}
 
+            {screen !== "scan" && (
+              <GlassIconButton onClick={() => go("welcome")} aria-label="Home">
+                <Home size={19} />
+              </GlassIconButton>
+            )}
+
             <div className="flex min-w-0 items-center gap-0.5 rounded-full border border-glass-line bg-glass p-1 shadow-[var(--shadow-soft)] backdrop-blur-xl backdrop-saturate-150">
-              {NAV.map(({ id, label, icon: Icon }) => {
+              {NAV.slice(0, 1).map(({ id, label, icon: Icon }) => {
                 const active = screen === id;
-                const enabled = id === "walkthrough" ? Boolean(session) : id === "ask" ? hasFindings : hasScans;
+                const enabled = hasScans;
                 return (
                   <button
                     key={id}
@@ -221,13 +271,36 @@ export function AccessLensApp() {
                     aria-current={active ? "page" : undefined}
                     aria-label={label}
                     onClick={() => {
-                      if (id === "discover") setFreshScanId(null);
                       go(id);
                     }}
-                    className={`pressable flex h-11 min-w-11 items-center justify-center gap-1.5 rounded-full text-[14px] font-semibold transition-[background-color,padding,color] duration-300 ease-[var(--ease-ios)] disabled:opacity-30 ${active ? "bg-primary px-4 text-on-primary" : "px-3 text-fg hover:bg-[color-mix(in_srgb,var(--fg)_8%,transparent)]"}`}
+                    className={`pressable flex size-11 items-center justify-center rounded-full transition-[background-color,color] duration-300 ease-[var(--ease-ios)] disabled:opacity-30 ${active ? "bg-primary text-on-primary" : "text-fg hover:bg-[color-mix(in_srgb,var(--fg)_8%,transparent)]"}`}
                   >
                     <Icon size={18} />
-                    {active && <span aria-hidden>{label}</span>}
+                  </button>
+                );
+              })}
+              <button
+                type="button"
+                disabled={!session}
+                aria-label="Ask Lumi"
+                onClick={() => openLumi()}
+                className="pressable flex size-11 items-center justify-center rounded-full text-fg transition-[background-color,color] duration-300 ease-[var(--ease-ios)] hover:bg-[color-mix(in_srgb,var(--fg)_8%,transparent)] disabled:opacity-30"
+              >
+                <Chat size={18} />
+              </button>
+              {NAV.slice(1).map(({ id, label, icon: Icon }) => {
+                const active = screen === id;
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    disabled={!session}
+                    aria-current={active ? "page" : undefined}
+                    aria-label={label}
+                    onClick={() => go(id)}
+                    className={`pressable flex size-11 items-center justify-center rounded-full transition-[background-color,color] duration-300 ease-[var(--ease-ios)] disabled:opacity-30 ${active ? "bg-primary text-on-primary" : "text-fg hover:bg-[color-mix(in_srgb,var(--fg)_8%,transparent)]"}`}
+                  >
+                    <Icon size={18} />
                   </button>
                 );
               })}
@@ -237,17 +310,18 @@ export function AccessLensApp() {
               <button
                 type="button"
                 onClick={() => startScan()}
-                aria-label={hasScans ? "Scan again" : "Scan"}
+                aria-label={hasScans ? "Scan new area" : "Scan"}
                 className="pressable flex h-12 shrink-0 items-center gap-2 rounded-full bg-primary pr-4 pl-3.5 text-[15px] font-semibold text-on-primary shadow-[0_8px_24px_-8px_rgba(0,0,0,0.5)]"
               >
                 <Scan size={19} />
-                <span className="@max-[374px]:hidden">{hasScans ? "Scan again" : "Scan"}</span>
+                <span className="@max-[374px]:hidden">{hasScans ? "New area" : "Scan"}</span>
               </button>
             ) : (
               <span className="size-11" aria-hidden />
             )}
           </nav>
         )}
+
       </div>
     </main>
   );

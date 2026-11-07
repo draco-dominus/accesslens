@@ -1,22 +1,26 @@
 "use client";
 
-import { useCallback, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import * as api from "@/lib/session/api";
 import * as E from "@/lib/session/engine";
 import { runScanPipeline } from "@/lib/session/pipeline";
 import { loadSession, saveSession } from "@/lib/session/storage";
+import { deleteInspectionPhotos, loadInspectionPhotos, photoStorageMessage, saveInspectionPhoto } from "@/lib/session/photo-storage";
 import type { Session } from "@/lib/session/types";
 
 /**
- * Orchestrates a walkthrough: scan → analyze → (match earlier areas) → (compare open findings) → integrate.
+ * Orchestrates an inspection. Two explicit operations:
+ *  - Scan new area: scanFile(file) → analyze (+ scene match, only to SUGGEST a re-check) → integrate.
+ *  - Re-check this area: scanFile(file, { lineUpScanId }) → analyze + compare that photo's open findings.
+ *  Accepting a "looks like Area N" suggestion runs the comparison via confirmRevisit().
  *
  * - Scans are processed one at a time in the order taken, so each one sees the previous results.
  *   The user can pick the next photo at any time; it simply waits in the queue.
  * - Every session has its own "run" (abort controller + queue). Starting over aborts in-flight requests,
  *   drops queued work, and any late result is discarded instead of touching the new session.
- * - Images are held in memory only, as normalized JPEG Blobs. Full images are released (object URLs
- *   revoked) once no open finding depends on them; thumbnails are kept for the timeline.
- * - Session data (no images) is mirrored to sessionStorage.
+ * - Normalized JPEGs remain available for the active inspection. Releasing them early made historical
+ *   photos disappear from the image-first review even though the session still referenced those scans.
+ * - Session data is mirrored to local storage; compressed images are persisted separately in IndexedDB.
  */
 
 export type ScanMedia = { thumbUrl?: string; imageUrl?: string; imageBlob?: Blob };
@@ -27,10 +31,13 @@ export type WalkthroughState = {
   checking: Record<string, boolean>;
   /** "Try comparison again" state, keyed by retryKey(scanId, findingId, referenceScanId). */
   comparisonRetries: Record<string, { busy: boolean; error?: string }>;
-  restored: boolean; // session came from sessionStorage (photos not available)
+  restored: boolean; // structured session came from device storage
+  photoRestore: "idle" | "loading" | "ready" | "unavailable";
+  restoredPhotoCount: number;
+  photoStorageWarning?: string;
 };
 
-const EMPTY: WalkthroughState = { session: null, media: {}, checking: {}, comparisonRetries: {}, restored: false };
+const EMPTY: WalkthroughState = { session: null, media: {}, checking: {}, comparisonRetries: {}, restored: false, photoRestore: "idle", restoredPhotoCount: 0 };
 export const retryKey = (scanId: string, findingId: string, referenceScanId: string) => `${scanId}|${findingId}|${referenceScanId}`;
 const newId = (prefix: string) => `${prefix}_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
 const message = (err: unknown, fallback: string) => (err instanceof Error && err.message ? err.message : fallback);
@@ -44,7 +51,7 @@ function revokeMedia(media: Record<string, ScanMedia>) {
 
 function createStore() {
   const restoredSession = typeof window === "undefined" ? null : loadSession();
-  let state: WalkthroughState = restoredSession ? { ...EMPTY, session: restoredSession, restored: true } : EMPTY;
+  let state: WalkthroughState = restoredSession ? { ...EMPTY, session: restoredSession, restored: true, photoRestore: "loading" } : EMPTY;
   const listeners = new Set<() => void>();
   return {
     get: () => state,
@@ -73,6 +80,33 @@ export function useWalkthrough() {
   const runRef = useRef<Run | null>(null);
   /** Original files kept until their photo is prepared, so "Try again" works even if preparing failed. */
   const sources = useRef(new Map<string, File>());
+
+  /** Restore locally persisted, compressed photos after the structured inspection has loaded. */
+  useEffect(() => {
+    const initial = store.get();
+    const sessionId = initial.session?.id;
+    if (!sessionId || !initial.restored) return;
+    let cancelled = false;
+    loadInspectionPhotos(sessionId)
+      .then((photos) => {
+        if (cancelled) return;
+        store.set((st) => {
+          if (st.session?.id !== sessionId) return st;
+          const media = { ...st.media };
+          for (const [scanId, blob] of photos) {
+            if (!st.session.scans.some((scan) => scan.id === scanId) || media[scanId]) continue;
+            media[scanId] = { imageBlob: blob, imageUrl: URL.createObjectURL(blob) };
+          }
+          return { ...st, media, photoRestore: "ready", restoredPhotoCount: Object.keys(media).length };
+        });
+      })
+      .catch((error) => {
+        if (!cancelled) store.set((st) => st.session?.id === sessionId ? { ...st, photoRestore: "unavailable", photoStorageWarning: photoStorageMessage(error) } : st);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [store]);
 
   /** The run for the current session (created lazily, e.g. for a session restored from storage). */
   const currentRun = useCallback((): Run | null => {
@@ -109,24 +143,6 @@ export function useWalkthrough() {
   );
 
   const blobOf = useCallback((scanId: string) => store.get().media[scanId]?.imageBlob, [store]);
-
-  /** Release full-size images no open finding (or pending question) depends on. Thumbnails stay. */
-  const pruneImages = useCallback(() => {
-    store.set((st) => {
-      if (!st.session) return st;
-      const keep = E.scansNeedingImages(st.session);
-      let changed = false;
-      const media = { ...st.media };
-      for (const [id, m] of Object.entries(media)) {
-        if (!keep.has(id) && m.imageUrl) {
-          URL.revokeObjectURL(m.imageUrl);
-          media[id] = { thumbUrl: m.thumbUrl };
-          changed = true;
-        }
-      }
-      return changed ? { ...st, media } : st;
-    });
-  }, [store]);
 
   const compareFinding = useCallback(
     async (run: Run, findingId: string, referenceScanId: string, newScanId: string): Promise<E.CompareOutcome> => {
@@ -171,7 +187,7 @@ export function useWalkthrough() {
         const startedAt = Date.now();
         update(run, (s) => E.setStage(s, scanId, { id: "prepare", label: "Getting your photo ready", state: "active", startedAt }));
         const prepared = await api.prepareImage(file, run.controller.signal);
-        // 640px keeps before/after views legible after the full image is released.
+        // A lightweight copy keeps timeline tiles quick while the full normalized photo remains available.
         const thumb = await api.makeThumbnail(prepared.blob, 640).catch(() => null);
         const media: ScanMedia = {
           imageBlob: prepared.blob,
@@ -180,6 +196,20 @@ export function useWalkthrough() {
         };
         if (!alive(run)) return revokeMedia({ [scanId]: media }); // session ended meanwhile
         store.set((st) => ({ ...st, media: { ...st.media, [scanId]: media } }));
+        // Persist a smaller JPEG without delaying analysis. The normalized in-memory image remains the
+        // source for AI requests and comparisons; IndexedDB is only for local recovery and reports.
+        void api
+          .makeThumbnail(prepared.blob, 1280, 0.78)
+          .catch(() => prepared.blob)
+          .then(async (stored) => {
+            if (!alive(run)) return;
+            await saveInspectionPhoto(run.sessionId, scanId, stored);
+            // Starting over while the write was in flight must not leave an orphaned photo behind.
+            if (!alive(run)) await deleteInspectionPhotos(run.sessionId).catch(() => {});
+          })
+          .catch((error) => {
+            if (alive(run)) store.set((st) => ({ ...st, photoStorageWarning: photoStorageMessage(error) }));
+          });
         sources.current.delete(scanId);
         update(run, (s) =>
           E.setStage(s, scanId, {
@@ -250,13 +280,13 @@ export function useWalkthrough() {
             comparisons: result.comparisons,
             newFindingIds: result.analysis.findings.map(() => newId("f")),
             lineUpScanId: result.lineUpScanId,
+            intent: result.intent,
           },
           Date.now(),
         );
       });
-      pruneImages();
     },
-    [store, blobOf, prepare, update, alive, fail, pruneImages],
+    [store, blobOf, prepare, update, alive, fail],
   );
 
   /** Abort everything belonging to the current session and clear its media. */
@@ -269,12 +299,16 @@ export function useWalkthrough() {
   }, [store]);
 
   const start = useCallback(() => {
+    const previousId = store.get().session?.id;
     teardown();
+    if (previousId) void deleteInspectionPhotos(previousId).catch(() => {});
     store.set(() => ({ ...EMPTY, session: E.createSession(newId("w"), Date.now()) }));
   }, [store, teardown]);
 
   const reset = useCallback(() => {
+    const previousId = store.get().session?.id;
     teardown();
+    if (previousId) void deleteInspectionPhotos(previousId).catch(() => {});
     store.set(() => EMPTY);
   }, [store, teardown]);
 
@@ -333,13 +367,12 @@ export function useWalkthrough() {
           const comparisons = await Promise.all(targets.map((f) => compareFinding(run, f.id, earlierScanId, scanId)));
           if (!alive(run)) return;
           update(run, (s) => E.applyUserRevisit(s, scanId, earlierScanId, comparisons, Date.now()));
-          pruneImages();
         } finally {
           setChecking(false);
         }
       });
     },
-    [store, currentRun, enqueue, compareFinding, alive, update, pruneImages],
+    [store, currentRun, enqueue, compareFinding, alive, update],
   );
 
   const declineRevisit = useCallback(
@@ -347,9 +380,8 @@ export function useWalkthrough() {
       const run = currentRun();
       if (!run) return;
       update(run, (s) => E.declineRevisit(s, scanId, earlierScanId));
-      pruneImages();
     },
-    [currentRun, update, pruneImages],
+    [currentRun, update],
   );
 
   /** User confirmed one specific suggested duplicate pair. */
@@ -389,13 +421,12 @@ export function useWalkthrough() {
           }
           update(run, (s) => E.applyRetriedComparison(s, scanId, outcome!, Date.now()));
           setRetry(null);
-          pruneImages();
         } finally {
           if (!outcome) setRetry(null); // aborted: clear the spinner
         }
       });
     },
-    [store, currentRun, enqueue, compareFinding, alive, update, pruneImages],
+    [store, currentRun, enqueue, compareFinding, alive, update],
   );
 
   /** True while any comparison retry for this scan is running. */

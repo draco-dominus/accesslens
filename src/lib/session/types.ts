@@ -3,7 +3,7 @@ import type { Comparison, GuardrailAdjustment } from "../comparison-schema";
 import type { SameArea } from "../match-schema";
 
 /**
- * Walkthrough session data. Plain JSON (no Blobs/URLs) so it can be persisted to sessionStorage
+ * Walkthrough session data. Plain JSON (no Blobs/URLs) so it can be persisted to local storage
  * and handed to Lumi later. Images live separately in the client image store (see useWalkthrough).
  */
 

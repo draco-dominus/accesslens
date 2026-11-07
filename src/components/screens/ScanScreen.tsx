@@ -3,9 +3,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { useWalkthrough } from "@/hooks/useWalkthrough";
 import { fitContain, type Size } from "@/lib/fit";
+import { areaOf, areas } from "@/lib/session/areas";
 import { openFindingsLastSeenIn } from "@/lib/session/engine";
 import { scanActivity } from "@/lib/session/lumi";
-import { isOpen } from "@/lib/session/types";
 import type { LumiMood } from "../lumi/Sidekick";
 import { Camera, Layers, Photos } from "../ui/Icons";
 import { IridescentEdge, SidekickCapsule } from "../ui/primitives";
@@ -28,17 +28,21 @@ const DEFAULT_FRAME: Size = { w: 3, h: 4 };
  * the same frame with the same fit, so aligning to it aligns the actual photo.
  *
  * Without a live camera (no HTTPS / permission denied) the native camera or photo picker is used, and
- * a selected Line-up photo is shown as a reference instead of an overlay.
+ * the Line-up photo is shown as a reference instead of an overlay.
+ *
+ * Two explicit modes, chosen before the camera opens:
+ *  - Scan new area (default): plain capture. No Line up, no comparison.
+ *  - Re-check (recheckScanId): the earlier photo is the Line-up guide and the capture is compared with it.
  */
 export function ScanScreen({
   wt,
   onCapture,
-  initialLineUpScanId,
+  recheckScanId,
 }: {
   wt: Walkthrough;
   onCapture: (file: File, lineUpScanId?: string) => void;
-  /** Pre-select an earlier scan to line up with (e.g. from "Re-check this spot"). */
-  initialLineUpScanId?: string;
+  /** Re-check mode: the earlier scan whose photo this capture is lined up with and compared against. */
+  recheckScanId?: string;
 }) {
   const video = useRef<HTMLVideoElement>(null);
   const area = useRef<HTMLDivElement>(null);
@@ -46,30 +50,23 @@ export function ScanScreen({
   const pickInput = useRef<HTMLInputElement>(null);
   const [cam, setCam] = useState<CamState>(() => (cameraSupported() ? "starting" : "unavailable"));
   const [flash, setFlash] = useState(0);
-  const [ghostScanId, setGhostScanId] = useState<string | null>(initialLineUpScanId ?? null);
+  // Re-check mode only: the outline of the earlier photo can be hidden, but the target stays.
+  const [outline, setOutline] = useState(true);
   const [areaSize, setAreaSize] = useState<Size | null>(null);
   const [videoSize, setVideoSize] = useState<Size | null>(null);
   const [ghostSize, setGhostSize] = useState<Size | null>(null);
 
   const session = wt.session;
   const busy = session?.scans.find((s) => s.step !== "done" && s.step !== "error");
-  const openCount = session?.findings.filter((f) => isOpen(f.status)).length ?? 0;
 
-  // Earlier photos the user can line up with to re-check an open concern from the same spot.
-  const ghostOptions = useMemo(
-    () =>
-      (session?.scans ?? [])
-        .filter((sc) => sc.step === "done" && openFindingsLastSeenIn(session!, sc.id).length > 0)
-        .map((sc) => ({
-          scan: sc,
-          url: wt.media[sc.id]?.imageUrl ?? wt.media[sc.id]?.thumbUrl,
-          findings: openFindingsLastSeenIn(session!, sc.id),
-        }))
-        .filter((o): o is typeof o & { url: string } => Boolean(o.url))
-        .reverse(),
-    [session, wt.media],
-  );
-  const ghost = ghostOptions.find((o) => o.scan.id === ghostScanId);
+  // Re-check target: the earlier photo and the open concerns it shows.
+  const target = useMemo(() => {
+    const scan = recheckScanId ? session?.scans.find((sc) => sc.id === recheckScanId) : undefined;
+    const url = scan ? (wt.media[scan.id]?.imageUrl ?? wt.media[scan.id]?.thumbUrl) : undefined;
+    return scan && url ? { scan, url, findings: openFindingsLastSeenIn(session!, scan.id), area: areaOf(session!, scan.id)?.number ?? scan.number } : null;
+  }, [recheckScanId, session, wt.media]);
+  const ghost = target && outline ? target : null;
+  const newArea = (session?.scans.length ? areas(session).length : 0) + 1;
 
   // Space available for the capture frame (between the guidance capsule and the controls).
   useEffect(() => {
@@ -124,7 +121,7 @@ export function ScanScreen({
     canvas.getContext("2d")!.drawImage(v, 0, 0, canvas.width, canvas.height);
     setFlash((n) => n + 1);
     canvas.toBlob(
-      (blob) => blob && onCapture(new File([blob], `scan-${Date.now()}.jpg`, { type: "image/jpeg" }), ghost?.scan.id),
+      (blob) => blob && onCapture(new File([blob], `scan-${Date.now()}.jpg`, { type: "image/jpeg" }), target?.scan.id),
       "image/jpeg",
       0.92,
     );
@@ -133,27 +130,23 @@ export function ScanScreen({
   const onPicked = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = "";
-    if (file) onCapture(file, ghost?.scan.id);
+    if (file) onCapture(file, target?.scan.id);
   };
 
-  const ghostWhat = ghost?.findings[0]?.details.title.toLowerCase();
-  const mood: LumiMood = ghost ? "ready" : busy ? "thinking" : "ready";
-  const title = ghost
-    ? `Line up with scan ${ghost.scan.number}`
+  const targetWhat = target?.findings[0]?.details.title.toLowerCase();
+  const mood: LumiMood = target ? "ready" : busy ? "thinking" : "ready";
+  const title = target
+    ? `Re-check Area ${target.area}`
+    : session?.scans.length
+      ? `Scan Area ${newArea}`
+      : "Let’s look at this space";
+  const detail = target
+    ? live && outline
+      ? `Match the faint outline of your earlier photo, then tap the shutter. I’ll compare ${targetWhat ?? "its findings"}.`
+      : `Stand where you took the earlier photo. I’ll compare ${targetWhat ?? "its findings"}.`
     : busy
-      ? `Still working on scan ${busy.number}`
-      : session?.scans.length
-        ? "Scan anywhere you like"
-        : "Let’s look at this space";
-  const detail = ghost
-    ? live
-      ? `Match the faint outline, then tap the shutter. I’ll re-check ${ghostWhat ?? "its findings"} directly.`
-      : `Take your photo from where this one was taken. I’ll re-check ${ghostWhat ?? "its findings"} directly.`
-    : busy
-      ? `${scanActivity(busy).title}. You can keep scanning; I’ll queue the next photo.`
-      : ghostOptions.length
-        ? `${openCount} ${openCount === 1 ? "concern is" : "concerns are"} still open. Re-checking one? Tap its photo under “Line up”.`
-        : "Point at an entrance, walkway or room. I look for steps, blocked paths and things sticking out.";
+      ? `${scanActivity(busy).title}. You can keep scanning; photos are queued.`
+      : "Point at an entrance, walkway or room. I look for steps, blocked paths and things sticking out.";
 
   return (
     <div data-theme="dark" className="relative h-full bg-black text-fg">
@@ -164,11 +157,15 @@ export function ScanScreen({
         {/* Space for the capture frame: below Lumi's capsule, above the controls. */}
         <div
           ref={area}
-          className={`absolute inset-x-2 top-[calc(var(--safe-top)+124px)] ${ghostOptions.length ? "bottom-[calc(var(--safe-bottom)+188px)]" : "bottom-[calc(var(--safe-bottom)+132px)]"}`}
+          className="absolute inset-x-2 top-[calc(var(--safe-top)+124px)] bottom-[calc(var(--safe-bottom)+148px)]"
         >
           <div
             className="absolute overflow-hidden rounded-[26px] bg-black ring-1 ring-white/25 transition-[width,height,left,top] duration-300"
-            style={frame ? { left: frame.left, top: frame.top, width: frame.width, height: frame.height } : { inset: 0, opacity: 0 }}
+            style={{
+              ...(frame ? { left: frame.left, top: frame.top, width: frame.width, height: frame.height } : { inset: 0, opacity: 0 }),
+              // Morphs into the photo on the findings screen (see globals.css).
+              viewTransitionName: "scan-photo",
+            }}
           >
             <video
               ref={video}
@@ -191,7 +188,7 @@ export function ScanScreen({
               <div className="absolute inset-x-6 top-1/2 -translate-y-1/2 text-center text-[15px] leading-snug text-white/85 [text-shadow:0_1px_8px_rgba(0,0,0,0.8)]">
                 {cam === "starting" && <p>Starting camera…</p>}
                 {cam === "denied" && <p>Camera access is off. You can still take or choose a photo below.</p>}
-                {cam === "unavailable" && !ghost && <p>Take a photo with your camera, or choose one from your library.</p>}
+                {cam === "unavailable" && !ghost && <p>{target ? "Take the photo from where the earlier one was taken." : "Take a photo with your camera, or choose one from your library."}</p>}
               </div>
             )}
             {flash > 0 && <div key={flash} aria-hidden className="animate-flash pointer-events-none absolute inset-0 bg-white" />}
@@ -208,52 +205,10 @@ export function ScanScreen({
 
       {/* Controls */}
       <div className="absolute inset-x-0 bottom-[calc(var(--safe-bottom)+12px)] z-10 px-4">
-        {ghostOptions.length > 0 && (
-          <div className="relative mx-auto mb-3 w-fit max-w-full rounded-full">
-            {/* A gentle glow while Line up is useful and unused, so it's noticed; it never blocks scanning. */}
-            {!ghost && <IridescentEdge active ring={1.5} bloom={10} speed={4} />}
-            <div
-              role="radiogroup"
-              aria-label="Line up with an earlier photo to re-check its findings"
-              className="no-scrollbar relative flex items-center gap-1 overflow-x-auto rounded-full border border-white/15 bg-black/55 p-1 backdrop-blur-xl"
-            >
-              <span className="flex shrink-0 items-center gap-1 pr-1 pl-2.5 text-[11px] font-semibold tracking-[0.06em] text-white/80 uppercase">
-                <Layers size={14} /> Line up
-              </span>
-              {ghostOptions.map(({ scan, url, findings }) => {
-                const on = scan.id === ghostScanId;
-                return (
-                  <button
-                    key={scan.id}
-                    type="button"
-                    role="radio"
-                    aria-checked={on}
-                    aria-label={`Line up with scan ${scan.number} to re-check ${findings.map((f) => f.details.title).join(", ")}`}
-                    onClick={() => {
-                      setGhostSize(null);
-                      setGhostScanId(on ? null : scan.id);
-                    }}
-                    className={`pressable flex min-h-11 shrink-0 items-center gap-1.5 rounded-full py-1 pr-3 pl-1 text-[14px] font-semibold ${on ? "bg-white text-black" : "text-white"}`}
-                  >
-                    {/* eslint-disable-next-line @next/next/no-img-element -- local blob URL */}
-                    <img src={url} alt="" className="size-9 rounded-full object-cover" />
-                    {scan.number}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        <div className="mt-2 flex items-center justify-center gap-8">
-          <button
-            type="button"
-            onClick={() => pickInput.current?.click()}
-            aria-label="Choose a photo from your library"
-            className="pressable grid size-12 place-items-center rounded-full border border-white/20 bg-white/10 text-white backdrop-blur-xl"
-          >
+        <div className="mt-2 flex items-start justify-center gap-8">
+          <ControlButton label="Library" onClick={() => pickInput.current?.click()} ariaLabel="Choose a photo from your library">
             <Photos size={21} />
-          </button>
+          </ControlButton>
           <button
             type="button"
             onClick={live ? captureFrame : () => takeInput.current?.click()}
@@ -263,12 +218,60 @@ export function ScanScreen({
             <IridescentEdge active={Boolean(busy)} ring={3} bloom={12} speed={2.4} />
             {live ? <span className="block size-[60px] rounded-full bg-white" /> : <Camera size={30} className="text-white" />}
           </button>
-          <span className="size-12" aria-hidden />
+          {target ? (
+            <ControlButton
+              label="Outline"
+              onClick={() => setOutline((v) => !v)}
+              ariaLabel={outline ? `Hide the outline of the earlier photo (still re-checking Area ${target.area})` : "Show the outline of the earlier photo"}
+              active={outline}
+            >
+              <Layers size={21} />
+            </ControlButton>
+          ) : (
+            <span className="w-12" aria-hidden />
+          )}
         </div>
         <p className="mt-2 text-center text-[13px] font-medium text-white/85" aria-hidden>
-          {live ? (ghost ? `Lined up with scan ${ghost.scan.number} · tap to scan` : "Tap to scan") : "Take or choose a photo"}
+          {target ? `Re-checking Area ${target.area} · ${live ? "tap to capture" : "take or choose a photo"}` : live ? "Tap to scan a new area" : "Take or choose a photo"}
         </p>
       </div>
+    </div>
+  );
+}
+
+/** Side control in the capture bar: same shape and glass for Library and Line up. */
+function ControlButton({
+  label,
+  ariaLabel,
+  onClick,
+  children,
+  active = false,
+  expanded,
+  badge = false,
+}: {
+  label: string;
+  ariaLabel: string;
+  onClick: () => void;
+  children: React.ReactNode;
+  active?: boolean;
+  expanded?: boolean;
+  badge?: boolean;
+}) {
+  return (
+    <div className="flex w-14 flex-col items-center gap-1">
+      <button
+        type="button"
+        onClick={onClick}
+        aria-label={ariaLabel}
+        aria-expanded={expanded}
+        className={`pressable relative grid size-12 place-items-center rounded-full border backdrop-blur-xl ${active ? "border-white bg-white text-black" : "border-white/20 bg-white/10 text-white"}`}
+      >
+        {children}
+        {badge && <span aria-hidden className="absolute top-0.5 right-0.5 size-2.5 rounded-full border-2 border-black bg-white" />}
+      </button>
+      <span aria-hidden className="text-[11px] font-medium text-white/75">
+        {label}
+      </span>
     </div>
   );
 }
